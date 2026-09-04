@@ -8,6 +8,7 @@ const links = [
   { href: "/", label: "Início" },
   { href: "/importar", label: "Importar" },
   { href: "/console", label: "Console SQL" },
+  { href: "/bancos", label: "Bancos" },
   { href: "/exportar", label: "Exportar" },
 ];
 

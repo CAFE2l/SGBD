@@ -12,6 +12,7 @@ import {
   migrateLegacyDatabase,
   type DatabaseRegistry,
 } from "./sqlite/persist";
+import { appendHistory, clearHistory } from "./sqlite/history";
 import type {
   TableInfo,
   QueryResult,
@@ -23,8 +24,18 @@ const DEFAULT_DB_NAME = "meu_banco";
 let SQL: SqlJsStatic | null = null;
 let initPromise: Promise<SqlJsStatic> | null = null;
 
+/** Metadados de um banco (datas de criação/modificação). */
+export interface DbMeta {
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ManagerRegistry extends DatabaseRegistry {
+  meta?: Record<string, DbMeta>;
+}
+
 /** Registro em memória; espelho do que está persistido. */
-let registry: DatabaseRegistry = { databases: [], activeDatabase: null };
+let registry: ManagerRegistry = { databases: [], activeDatabase: null };
 
 /** Instância SQL carregada do banco atualmente ativo. */
 let active: { name: string; db: Database } | null = null;
@@ -49,14 +60,23 @@ async function getSql(): Promise<SqlJsStatic> {
 /**
  * Inicializa o gerenciador: carrega o registro, migra um banco legado de
  * versões anteriores e garante que exista um banco ativo.
+ *
+ * A inicialização é deduplicada com um cache de Promise para que chamadas
+ * concorrentes (ex: StrictMode mountando o provider duas vezes) não caiam em
+ * recursão: `createDatabase` chama `initManager` de volta enquanto a
+ * inicialização ainda está em andamento, e sem o cache isso nunca resolve.
  */
-export async function initManager(): Promise<void> {
+let managerInitPromise: Promise<void> | null = null;
+
+async function initManagerImpl(): Promise<void> {
   if (registry.databases.length > 0) return;
   const persisted = (await loadRegistry()) ?? {
     databases: [],
     activeDatabase: null,
+    meta: {},
   };
   registry = persisted;
+  if (!registry.meta) registry.meta = {};
 
   if (registry.databases.length === 0) {
     const migrated = await migrateLegacyDatabase(DEFAULT_DB_NAME);
@@ -67,12 +87,22 @@ export async function initManager(): Promise<void> {
   }
 
   if (registry.databases.length === 0) {
-    await createDatabase(DEFAULT_DB_NAME);
+    // Cria o banco padrão diretamente (sem recursão via createDatabase).
+    await createDatabaseRaw(DEFAULT_DB_NAME);
   }
   if (!registry.activeDatabase && registry.databases.length > 0) {
     registry.activeDatabase = registry.databases[0];
   }
   await persistRegistry(registry);
+}
+
+export function initManager(): Promise<void> {
+  if (!managerInitPromise) {
+    managerInitPromise = initManagerImpl().finally(() => {
+      managerInitPromise = null;
+    });
+  }
+  return managerInitPromise;
 }
 
 /** Lista os nomes dos bancos existentes. */
@@ -138,6 +168,11 @@ export async function ensureActiveEngine(): Promise<Database> {
 /** Cria um novo banco nomeado e o torna o banco ativo. */
 export async function createDatabase(name: string): Promise<void> {
   await initManager();
+  await createDatabaseRaw(name);
+}
+
+/** Cria um banco sem passar por initManager (evita recursão). */
+async function createDatabaseRaw(name: string): Promise<void> {
   const clean = sanitizeName(name);
   if (!clean) throw new Error("Nome de banco inválido.");
   if (registry.databases.includes(clean)) {
@@ -151,8 +186,40 @@ export async function createDatabase(name: string): Promise<void> {
   active = { name: clean, db };
   registry.databases.push(clean);
   registry.activeDatabase = clean;
+  const now = Date.now();
+  if (!registry.meta) registry.meta = {};
+  registry.meta[clean] = { createdAt: now, updatedAt: now };
   await persistRegistry(registry);
   void persistDatabaseBytes(clean, db.export());
+}
+
+/** Atualiza a data de última modificação de um banco (persistência best-effort). */
+function touchDatabase(name: string): void {
+  if (!registry.meta) registry.meta = {};
+  const now = Date.now();
+  const m = registry.meta[name];
+  if (m) m.updatedAt = now;
+  else registry.meta[name] = { createdAt: now, updatedAt: now };
+  void persistRegistry(registry);
+}
+
+/**
+ * Registra uma atividade bem-sucedida num banco: atualiza `updatedAt` e anexa
+ * uma entrada ao histórico persistido (auditoria/checkpoint per query).
+ */
+export function recordDatabaseActivity(
+  dbName: string | null | undefined,
+  command: string,
+  query: string
+): void {
+  if (!dbName) return;
+  void appendHistory(dbName, {
+    timestamp: Date.now(),
+    command,
+    query,
+    success: true,
+  });
+  touchDatabase(dbName);
 }
 
 /** Remove um banco nomeado (e seus dados persistidos). */
@@ -166,6 +233,8 @@ export async function dropDatabase(name: string): Promise<void> {
     active = null;
   }
   await deleteDatabaseBytes(name);
+  await clearHistory(name);
+  if (registry.meta) delete registry.meta[name];
   registry.databases = registry.databases.filter((d) => d !== name);
 
   if (registry.activeDatabase === name) {
@@ -182,6 +251,56 @@ export async function dropDatabase(name: string): Promise<void> {
   } else if (!active) {
     await switchActiveDatabase(registry.activeDatabase!);
   }
+}
+
+/**
+ * Inspeciona um banco sem alterar o banco ativo: número de tabelas e datas de
+ * criação/última modificação (para a página "Bancos de Dados").
+ */
+export async function inspectDatabase(
+  name: string
+): Promise<{
+  name: string;
+  tableCount: number;
+  createdAt: number | null;
+  updatedAt: number | null;
+}> {
+  await initManager();
+  if (!registry.databases.includes(name)) {
+    throw new Error(`Banco "${name}" não encontrado.`);
+  }
+  const m = registry.meta?.[name];
+  const sql = await getSql();
+  let tableCount = 0;
+  try {
+    if (active?.name === name) {
+      const res = active.db.exec(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+      );
+      tableCount = res[0]?.values.length ?? 0;
+    } else {
+      const persisted = await loadDatabaseBytes(name);
+      if (persisted && persisted.byteLength > 0) {
+        const db = new sql.Database(persisted);
+        try {
+          const res = db.exec(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+          );
+          tableCount = res[0]?.values.length ?? 0;
+        } finally {
+          db.close();
+        }
+      }
+    }
+  } catch {
+    tableCount = 0;
+  }
+  return {
+    name,
+    tableCount,
+    createdAt: m?.createdAt ?? null,
+    updatedAt: m?.updatedAt ?? null,
+  };
 }
 
 /** Lista as tabelas do banco ativo. */
@@ -327,6 +446,24 @@ function firstKeyword(sql: string): string {
   return m ? m[1].toUpperCase() : "SQL";
 }
 
+const WRITE_KEYWORDS = new Set([
+  "CREATE",
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+  "ALTER",
+  "DROP",
+  "REPLACE",
+]);
+
+/** Define se um comando bem-sucedido deve virar entrada de histórico. */
+function shouldRecordHistory(keyword: string, stmt: string): boolean {
+  if (!WRITE_KEYWORDS.has(keyword)) return false;
+  // DROP DATABASE exclui o banco inteiro; não faz sentido registrar no ativo.
+  if (keyword === "DROP" && /^DROP\s+DATABASE/i.test(stmt)) return false;
+  return true;
+}
+
 function sanitizeName(name: string): string {
   return name.trim().replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
 }
@@ -439,6 +576,10 @@ export async function parseAndExecuteScript(
     }
 
     outcomes.push(base);
+    // Auditória implícita: query de escrita bem-sucedida vira histórico.
+    if (base.success && shouldRecordHistory(keyword, stmt)) {
+      recordDatabaseActivity(registry.activeDatabase, keyword, stmt);
+    }
   }
 
   const log = outcomes.map(
@@ -460,12 +601,20 @@ export async function parseAndExecuteScript(
 async function applyCreate(stmt: string, base: StatementOutcome): Promise<void> {
   const m = stmt.match(/^CREATE\s+DATABASE\s+(IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)/i);
   if (m) {
+    const ifNotExists = !!m[1];
     const name = sanitizeName(m[2]);
     const existed = listDatabases().includes(name);
+    if (existed) {
+      if (!ifNotExists) {
+        throw new Error(`Banco "${name}" já existe.`);
+      }
+      await switchActiveDatabase(name);
+      base.message = `Banco "${name}" já existia (mantido como ativo).`;
+      base.success = true;
+      return;
+    }
     await createDatabase(name);
-    base.message = existed
-      ? `Banco "${name}" já existia (mantido como ativo).`
-      : `Banco "${name}" criado e selecionado.`;
+    base.message = `Banco "${name}" criado e selecionado.`;
     base.success = true;
     return;
   }

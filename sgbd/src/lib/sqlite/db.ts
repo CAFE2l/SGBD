@@ -9,6 +9,8 @@ import {
   parseAndExecuteScript,
   initManager as managerInit,
   listTables as listTablesWithEngine,
+  recordDatabaseActivity,
+  getActiveDatabase,
 } from "@/lib/database-manager";
 import type {
   TableInfo,
@@ -18,6 +20,8 @@ import type {
   QueryScriptResult,
   ImportReport,
 } from "./types";
+import type { Completion } from "@codemirror/autocomplete";
+import type { SQLNamespace } from "@codemirror/lang-sql";
 
 /**
  * Facade sobre o database-manager, preservando a API usada pelas páginas
@@ -33,6 +37,8 @@ export {
   switchActiveDatabase,
   parseAndExecuteScript,
   initManager,
+  inspectDatabase,
+  recordDatabaseActivity,
 } from "@/lib/database-manager";
 
 /** Persiste o estado atual do banco ativo (autosave). */
@@ -63,6 +69,42 @@ export async function runQuery(sql: string): Promise<QueryResult> {
 export async function listTables(engine?: Database): Promise<TableInfo[]> {
   if (engine) return listTablesWithEngine(engine);
   return listTablesWithEngine(await ensureActiveEngine());
+}
+
+/**
+ * Retorna o schema no formato usado pelo autocomplete SQL do CodeMirror.
+ * A leitura é feita diretamente no motor ativo a cada chamada para que
+ * CREATE/ALTER/importações e trocas de banco sejam refletidos imediatamente.
+ */
+export async function getSchemaCompletions(
+  dbName: string
+): Promise<SQLNamespace> {
+  if (getActiveDatabase() !== dbName) {
+    return {};
+  }
+
+  const engine = await ensureActiveEngine();
+  const schema: Record<string, SQLNamespace> = {};
+  const tables = await listTables(engine);
+
+  for (const table of tables) {
+    const tableSchema = await getTableSchema(table.name, engine);
+    const columns: Completion[] = tableSchema.columns.map((column) => ({
+      label: column.name,
+      type: "property",
+      detail: column.type || "TEXT",
+    }));
+    schema[table.name] = {
+      self: {
+        label: table.name,
+        type: "class",
+        detail: "tabela",
+      },
+      children: columns,
+    };
+  }
+
+  return schema;
 }
 
 export async function tableRowCount(
@@ -123,6 +165,103 @@ export async function getTableData(
   return resultToObject(res[0].columns, res[0].values, "");
 }
 
+/** Tipo com a definição de uma chave estrangeira de uma tabela. */
+export interface ForeignKeyInfo {
+  table: string;
+  from: string;
+  to: string;
+}
+
+/** Lista as FKs declaradas de uma tabela (PRAGMA foreign_key_list). */
+export async function getForeignKeys(
+  table: string,
+  engine?: Database
+): Promise<ForeignKeyInfo[]> {
+  const useDb = engine ?? (await ensureActiveEngine());
+  const res = useDb.exec(`PRAGMA foreign_key_list("${table}")`);
+  if (res.length === 0) return [];
+  const idx: Record<string, number> = {};
+  res[0].columns.forEach((c, i) => {
+    idx[c] = i;
+  });
+  return res[0].values.map((v) => ({
+    table: String(v[idx["table"]]),
+    from: String(v[idx["from"]]),
+    to: String(v[idx["to"]] ?? ""),
+  }));
+}
+
+/**
+ * Busca dados editáveis de uma tabela: inclui a coluna `__rowid__` para que
+ * edições possam ser persistidas com UPDATE.
+ */
+export async function getEditableTableData(
+  table: string,
+  limit = 500,
+  engine?: Database
+): Promise<QueryResult> {
+  const useDb = engine ?? (await ensureActiveEngine());
+  const res = useDb.exec(
+    `SELECT rowid AS __rowid__, * FROM "${table}" LIMIT ${limit};`
+  );
+  if (res.length === 0) {
+    return { columns: [], rows: [], isSelect: true, message: "Tabela vazia." };
+  }
+  return resultToObject(res[0].columns, res[0].values, "");
+}
+
+/**
+ * Aplica uma correção de célula na tabela do banco ativo via UPDATE e registra
+ * a atividade no histórico. Retorna o número de linhas afetadas.
+ */
+export async function updateTableCell(
+  table: string,
+  rowid: number,
+  column: string,
+  value: string
+): Promise<number> {
+  const engine = await ensureActiveEngine();
+  const schema = await getTableSchema(table, engine);
+  const col = schema.columns.find((c) => c.name === column);
+  const bound: SqlValue = value === "" ? null : coerceByType(col, value);
+
+  engine.exec(`UPDATE "${table}" SET "${column}" = ? WHERE rowid = ${rowid};`, [
+    bound,
+  ]);
+  const affected = engine.getRowsModified();
+  save();
+
+  const literal = bound === null ? "NULL" : literalOf(value, col);
+  const stmt = `UPDATE "${table}" SET "${column}" = ${literal} WHERE rowid = ${rowid};`;
+  recordDatabaseActivity(getActiveDatabase(), "UPDATE", stmt);
+  return affected;
+}
+
+function coerceByType(
+  col: ColumnInfo | undefined,
+  value: string
+): number | string {
+  const t = (col?.type ?? "TEXT").toUpperCase();
+  if (t.includes("INT")) {
+    const n = Number(value);
+    return Number.isNaN(n) ? value : Math.trunc(n);
+  }
+  if (t.includes("REAL") || t.includes("DOU") || t.includes("FLOA")) {
+    const n = Number(value);
+    return Number.isNaN(n) ? value : n;
+  }
+  return value;
+}
+
+function literalOf(value: string, col: ColumnInfo | undefined): string {
+  const t = (col?.type ?? "TEXT").toUpperCase();
+  if (t.includes("INT") || t.includes("REAL") || t.includes("DOU") || t.includes("FLOA")) {
+    const n = Number(value);
+    if (!Number.isNaN(n)) return String(n);
+  }
+  return sqlLiteral(value);
+}
+
 /** Converte um resultado bruto do sql.js em objeto tabular. */
 export function resultToObject(
   columns: string[],
@@ -172,6 +311,43 @@ function inferType(values: (string | null)[]): string {
 function sqlLiteral(v: string | null): string {
   if (v == null) return "NULL";
   return "'" + v.replace(/'/g, "''") + "'";
+}
+
+/** Renderiza uma célula do CSV como literal SQL conforme o tipo da coluna. */
+function csvCellLiteral(type: string, v: string | null): string {
+  if (v == null || v === "") return "NULL";
+  if (type === "INTEGER") {
+    const n = Number(v);
+    return Number.isInteger(n) ? String(n) : sqlLiteral(v);
+  }
+  if (type === "REAL") {
+    const n = Number(v);
+    return Number.isNaN(n) ? sqlLiteral(v) : String(n);
+  }
+  return sqlLiteral(v);
+}
+
+/** Monta o dump de uma importação CSV (CREATE TABLE + INSERTs). */
+export function buildCsvSql(
+  tableName: string,
+  columns: string[],
+  rows: (string | null)[][],
+  types: string[]
+): string {
+  const cols = columns.map((c) => `"${c}"`).join(", ");
+  const parts: string[] = [];
+  parts.push(
+    `CREATE TABLE "${tableName}" (${columns
+      .map((c, i) => `"${c}" ${types[i]}`)
+      .join(", ")});`
+  );
+  for (let r = 0; r < rows.length; r++) {
+    const values = columns
+      .map((_, ci) => csvCellLiteral(types[ci], rows[r][ci] ?? null))
+      .join(", ");
+    parts.push(`INSERT INTO "${tableName}" (${cols}) VALUES (${values});`);
+  }
+  return parts.join("\n");
 }
 
 /** Importa um arquivo CSV já parseado como tabela nomeada no banco ativo. */
@@ -257,7 +433,17 @@ export async function importCsv(
   log.push(`${inserted} linha(s) inserida(s).`);
   if (errors.length) log.push(`${errors.length} erro(s) ignorado(s).`);
 
-  return { tableName: cleanName, tableCount: 1, rowCount: inserted, log, errors };
+  const code = buildCsvSql(cleanName, uniqueCols, parsed.rows, types);
+  recordDatabaseActivity(getActiveDatabase(), "IMPORT", code);
+
+  return {
+    tableName: cleanName,
+    tableCount: 1,
+    rowCount: inserted,
+    log,
+    errors,
+    code,
+  };
 }
 
 /** Importa um script SQL com suporte a CREATE DATABASE/USE, no banco ativo. */
@@ -277,6 +463,7 @@ export async function importSql(sql: string): Promise<ImportReport> {
     rowCount: tables.length,
     log,
     errors,
+    code: sql,
   };
 }
 

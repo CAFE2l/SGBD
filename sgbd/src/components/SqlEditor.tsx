@@ -3,8 +3,9 @@
 import { useEffect, useRef } from "react";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { basicSetup } from "codemirror";
-import { EditorState, type Extension } from "@codemirror/state";
-import { sql } from "@codemirror/lang-sql";
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
+import { sql, type SQLNamespace } from "@codemirror/lang-sql";
+import { closeCompletion } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 
 interface SqlEditorProps {
@@ -12,6 +13,7 @@ interface SqlEditorProps {
   onChange: (value: string) => void;
   onRun?: () => void;
   placeholderText?: string;
+  schema?: SQLNamespace;
 }
 
 const baseTheme = EditorView.theme({
@@ -29,13 +31,17 @@ export function SqlEditor({
   onChange,
   onRun,
   placeholderText,
+  schema = {},
 }: SqlEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onRunRef = useRef(onRun);
+  const schemaRef = useRef(schema);
+  const schemaCompartment = useRef(new Compartment());
   onChangeRef.current = onChange;
   onRunRef.current = onRun;
+  schemaRef.current = schema;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -45,21 +51,26 @@ export function SqlEditor({
     });
 
     const extensions: Extension[] = [
+      Prec.high(
+        keymap.of([
+          {
+            key: "Mod-Enter",
+            preventDefault: true,
+            run: () => {
+              const view = viewRef.current;
+              if (view) closeCompletion(view);
+              onRunRef.current?.();
+              return true;
+            },
+          },
+        ])
+      ),
       basicSetup,
-      sql(),
+      schemaCompartment.current.of(sql({ schema: schemaRef.current })),
       oneDark,
       baseTheme,
       EditorView.lineWrapping,
       updateListener,
-      keymap.of([
-        {
-          key: "Mod-Enter",
-          run: () => {
-            onRunRef.current?.();
-            return true;
-          },
-        },
-      ]),
     ];
 
     if (placeholderText) extensions.push(placeholder(placeholderText));
@@ -76,6 +87,16 @@ export function SqlEditor({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: schemaCompartment.current.reconfigure(
+        sql({ schema })
+      ),
+    });
+  }, [schema]);
 
   // Reconciliar alterações externas de value sem criar loop
   useEffect(() => {

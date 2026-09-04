@@ -61,4 +61,6 @@ export interface ImportReport {
   rowCount: number;
   log: string[];
   errors: string[];
+  /** SQL equivalente à importação (CREATE + INSERTs, ou script .sql original). */
+  code: string;
 }

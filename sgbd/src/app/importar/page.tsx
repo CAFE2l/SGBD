@@ -1,12 +1,15 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
 import { FileDropzone } from "@/components/FileDropzone";
+import { ResultTable } from "@/components/ResultTable";
+import { SchemaDiagram } from "@/components/SchemaDiagram";
 import { useDb } from "@/hooks/useDb";
-import type { ImportReport } from "@/lib/sqlite/types";
+import { getTableData, getActiveDatabase } from "@/lib/sqlite/db";
+import type { ImportReport, QueryResult } from "@/lib/sqlite/types";
 
 type ColumnType = "INTEGER" | "REAL" | "TEXT";
 
@@ -224,13 +227,16 @@ export default function ImportarPage() {
       )}
 
       {phase === "done" && report && (
-        <DoneState
-          report={report}
-          onImportAnother={() => {
-            setReport(null);
-            setPhase("idle");
-          }}
-        />
+        <>
+          <DoneState
+            report={report}
+            onImportAnother={() => {
+              setReport(null);
+              setPhase("idle");
+            }}
+          />
+          <ImportResultTabs report={report} />
+        </>
       )}
 
       <div className="mt-10">
@@ -447,4 +453,153 @@ function inferType(values: (string | null)[]): ColumnType {
   if (allNumbers && allInt) return "INTEGER";
   if (allNumbers) return "REAL";
   return "TEXT";
+}
+
+type ResultTab = "tabela" | "codigo" | "diagrama";
+
+const TABS: { id: ResultTab; label: string }[] = [
+  { id: "tabela", label: "Tabela" },
+  { id: "codigo", label: "Código" },
+  { id: "diagrama", label: "Diagrama" },
+];
+
+/**
+ * Abas de visualização do que foi importado: planilha (Tabela), SQL gerado
+ * (Código) e relacionamentos ER (Diagrama).
+ */
+function ImportResultTabs({ report }: { report: ImportReport }) {
+  const { tables } = useDb();
+  const [tab, setTab] = useState<ResultTab>("tabela");
+  const [selected, setSelected] = useState<string>("");
+  const [data, setData] = useState<QueryResult | null>(null);
+  const [loadingData, setLoadingData] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (tables.length > 0 && !tables.some((t) => t.name === selected)) {
+      setSelected(tables[0].name);
+    }
+  }, [tables, selected]);
+
+  useEffect(() => {
+    if (tab !== "tabela" || !selected) return;
+    let cancelled = false;
+    setLoadingData(true);
+    getTableData(selected, 1000)
+      .then((res) => {
+        if (!cancelled) setData(res);
+      })
+      .catch(() => {
+        if (!cancelled) setData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingData(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, selected]);
+
+  return (
+    <div className="mt-8 rounded-2xl border border-white/10 bg-white/5">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 pt-3">
+        <div className="flex gap-1">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`rounded-t-lg px-4 py-2 text-xs font-semibold transition-colors ${
+                tab === t.id
+                  ? "border border-b-0 border-white/10 bg-white/5 text-sky-300"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <span className="pb-2 pr-2 font-mono text-[11px] text-slate-500">
+          banco: {getActiveDatabase() ?? "—"}
+        </span>
+      </div>
+
+      <div className="p-4">
+        {tab === "tabela" && (
+          <div>
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <label className="text-xs font-semibold text-slate-400">
+                Tabela:
+              </label>
+              <select
+                value={selected}
+                onChange={(e) => setSelected(e.target.value)}
+                className="rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 font-mono text-sm text-sky-300 outline-none focus:border-sky-400/60"
+              >
+                {tables.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              {loadingData && (
+                <span className="text-xs text-slate-500">Carregando…</span>
+              )}
+            </div>
+            {data ? (
+              <ResultTable
+                columns={data.columns}
+                rows={data.rows}
+                emptyMessage={data.message}
+                pageSize={25}
+              />
+            ) : loadingData ? (
+              <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center text-sm text-slate-500">
+                Carregando dados…
+              </div>
+            ) : (
+              <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center text-sm text-slate-500">
+                Não foi possível carregar os dados.
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "codigo" && (
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-semibold text-slate-400">
+                SQL equivalente à importação
+              </p>
+              <button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(report.code);
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1500);
+                  } catch {
+                    // clipboard indisponível
+                  }
+                }}
+                className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-slate-400 hover:bg-white/5"
+              >
+                {copied ? "Copiado!" : "Copiar"}
+              </button>
+            </div>
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-4 font-mono text-[11px] leading-relaxed text-slate-300">
+              {report.code}
+            </pre>
+          </div>
+        )}
+
+        {tab === "diagrama" && (
+          <div>
+            <p className="mb-2 text-xs font-semibold text-slate-400">
+              Relacionamentos (atualizado conforme o schema real do banco)
+            </p>
+            <SchemaDiagram tables={tables.map((t) => t.name)} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }

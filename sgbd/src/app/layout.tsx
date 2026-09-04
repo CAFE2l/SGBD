@@ -9,6 +9,9 @@ export const metadata: Metadata = {
   title: "SGBD Web Educacional",
   description:
     "Ferramenta visual para importar, consultar e exportar bancos de dados em sala de aula.",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({

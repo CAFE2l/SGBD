@@ -17,6 +17,11 @@ export interface DatabaseRegistry {
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
+/** Conexão IndexedDB compartilhada com outros módulos (ex: histórico). */
+export function getIDB(): Promise<IDBPDatabase> {
+  return getDB();
+}
+
 function getDB(): Promise<IDBPDatabase> {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, 1, {

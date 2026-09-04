@@ -1,17 +1,31 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { PageShell } from "@/components/PageShell";
 import { SqlEditor } from "@/components/SqlEditor";
 import { ResultTable } from "@/components/ResultTable";
 import { TableList } from "@/components/TableList";
 import { useDb } from "@/hooks/useDb";
-import { getTableSchema } from "@/lib/sqlite/db";
+import { getSchemaCompletions, getTableSchema } from "@/lib/sqlite/db";
+import type { SQLNamespace } from "@codemirror/lang-sql";
 import type { QueryResult, QueryScriptResult, ColumnInfo } from "@/lib/sqlite/types";
 
+/** Tempo máximo de execução antes de forçar o retorno ao estado ocioso. */
+const EXEC_TIMEOUT_MS = 15000;
+
 export default function ConsolePage() {
+  return (
+    <Suspense fallback={<PageShell>Carregando Console…</PageShell>}>
+      <ConsoleInner />
+    </Suspense>
+  );
+}
+
+function ConsoleInner() {
   const { tables, executeScript, databases, activeDatabase, switchDatabase, createNewDatabase } =
     useDb();
+  const searchParams = useSearchParams();
   const [sql, setSql] = useState("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
@@ -22,6 +36,35 @@ export default function ConsolePage() {
   const [loadingSchema, setLoadingSchema] = useState(false);
   const [newDbName, setNewDbName] = useState("");
   const [showNewDb, setShowNewDb] = useState(false);
+  const [completionSchema, setCompletionSchema] = useState<SQLNamespace>({});
+
+  // Permite abrir /console?db=nome para já deixar o banco ativo selecionado.
+  // Aplica apenas uma vez para não "brigar" com trocas manuais posteriores.
+  const requestedDb = searchParams.get("db");
+  const appliedDbParam = useRef(false);
+  useEffect(() => {
+    if (!requestedDb || appliedDbParam.current) return;
+    appliedDbParam.current = true;
+    if (requestedDb !== activeDatabase) {
+      switchDatabase(requestedDb).catch(() => {
+        // banco inválido: mantém o banco atual
+      });
+    }
+  }, [requestedDb, activeDatabase, switchDatabase]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeDatabase) {
+      setCompletionSchema({});
+      return;
+    }
+    getSchemaCompletions(activeDatabase).then((schema) => {
+      if (!cancelled) setCompletionSchema(schema);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDatabase, tables]);
 
   const run = useCallback(
     async (source?: string) => {
@@ -31,15 +74,27 @@ export default function ConsolePage() {
       setError(null);
       setResult(null);
       setLog([]);
+      let stale = false;
+      // Rede de segurança: nunca deixar o botão preso em "Executando…".
+      const guard = window.setTimeout(() => {
+        stale = true;
+        setRunning(false);
+        setError(
+          "A execução levou mais que 15s e foi interrompida por segurança. " +
+            "Tente dividir o script em comandos menores."
+        );
+      }, EXEC_TIMEOUT_MS);
       try {
         const res = await executeScript(query);
+        if (stale) return;
         setResult(res.final);
         setLog(res.log);
         setError(res.error);
         setHistory((h) => [query, ...h.filter((x) => x !== query)].slice(0, 20));
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        if (!stale) setError(e instanceof Error ? e.message : String(e));
       } finally {
+        window.clearTimeout(guard);
         setRunning(false);
       }
     },
@@ -180,6 +235,7 @@ export default function ConsolePage() {
                 value={sql}
                 onChange={setSql}
                 onRun={() => run()}
+                schema={completionSchema}
                 placeholderText={"CREATE DATABASE Ecommerce;\nUSE Ecommerce;\nCREATE TABLE ...;\nINSERT INTO ...;"}
               />
             </div>
