@@ -165,234 +165,15 @@ function TabelasInner() {
     return m;
   }, [fks]);
 
-  const renderEstrutura = () => {
-    if (loadingSchema) {
-      return (
-        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-slate-400">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-          Carregando estrutura…
-        </div>
-      );
-    }
-    if (!schema) {
-      return (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-slate-500">
-          Não foi possível carregar a estrutura da tabela.
-        </div>
-      );
-    }
-    return (
-      <div className="overflow-hidden rounded-xl border border-white/10">
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-900/80 text-slate-400">
-            <tr>
-              <th className="px-3 py-2">Coluna</th>
-              <th className="px-3 py-2">Tipo</th>
-              <th className="px-3 py-2 text-center">PK</th>
-              <th className="px-3 py-2 text-center">NOT NULL</th>
-              <th className="px-3 py-2">Default</th>
-            </tr>
-          </thead>
-          <tbody>
-            {schema.columns.map((c) => (
-              <tr key={c.name} className="border-t border-white/5">
-                <td className="px-3 py-2 font-mono text-sky-300">{c.name}</td>
-                <td className="px-3 py-2 font-mono text-slate-300">
-                  {c.type || "TEXT"}
-                </td>
-                <td className="px-3 py-2 text-center text-amber-300">
-                  {c.pk > 0 ? "✔" : ""}
-                </td>
-                <td className="px-3 py-2 text-center text-slate-400">
-                  {c.notnull ? "✔" : ""}
-                </td>
-                <td className="px-3 py-2 font-mono text-slate-400">
-                  {c.dflt_value ?? "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {fks.length > 0 && (
-          <div className="border-t border-white/10 bg-black/20 px-3 py-2">
-            <p className="mb-1 text-[11px] font-semibold text-slate-400">
-              Chaves estrangeiras
-            </p>
-            <ul className="space-y-0.5">
-              {fks.map((fk, i) => (
-                <li key={i} className="font-mono text-[11px] text-slate-300">
-                  {fk.from} → {fk.table}.{fk.to}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const renderDados = () => {
-    if (loadingRows || !rowData) {
-      return (
-        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-slate-400">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-          Carregando dados…
-        </div>
-      );
-    }
-    return (
-      <ResultTable
-        columns={rowData.columns}
-        rows={rowData.rows}
-        emptyMessage={rowData.message}
-        pageSize={20}
-      />
-    );
-  };
-
-  const renderDiagrama = () => {
-    if (tables.length === 0) {
-      return (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-500">
-          Nenhuma tabela para exibir no diagrama.
-        </div>
-      );
-    }
-    return <SchemaDiagram tables={tables.map((t) => t.name)} />;
-  };
-
-  return (
-    <PageShell>
-      <div className="mb-6 flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold text-white">Ver Tabelas</h1>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            banco: {activeDatabase ?? "—"}
-          </span>
-          <Link
-            href="/bancos"
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 hover:border-sky-400/40 hover:text-sky-300"
-          >
-            ← Voltar para Bancos
-          </Link>
-        </div>
-        <p className="text-sm text-slate-400">
-          Navegue pela estrutura e dados das tabelas do banco, estilo phpMyAdmin.
-        </p>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Lista de tabelas */}
-        <div className="lg:col-span-1">
-          <h2 className="mb-2 text-xs font-semibold text-slate-400">
-            Tabelas ({tables.length})
-          </h2>
-          {tables.length === 0 ? (
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-center text-sm text-slate-500">
-              Nenhuma tabela neste banco.
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {tables.map((t: TableInfo) => {
-                const isActive = t.name === selectedTable;
-                return (
-                  <button
-                    key={t.name}
-                    onClick={() => void loadSchema(t.name)}
-                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left font-mono text-xs transition-colors ${
-                      isActive
-                        ? "border-sky-400/40 bg-sky-400/10 text-sky-200"
-                        : "border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-white/10"
-                    }`}
-                    title={`Ver estrutura e dados de ${t.name}`}
-                  >
-                    <span className="truncate">{t.name}</span>
-                    <span className="ml-2 rounded-full border border-white/10 bg-black/20 px-1.5 py-0.25 text-[10px] text-slate-400">
-                      {loadingCounts ? "…" : counts[t.name] ?? 0}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Detalhe da tabela selecionada */}
-        <div className="lg:col-span-2">
-          {!selectedTable ? (
-            <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-500">
-              Selecione uma tabela para ver sua estrutura e dados.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Cabeçalho da aba */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-semibold text-sky-300">
-                    {selectedTable}
-                  </span>
-                  {loadingSchema && (
-                    <span className="text-[11px] text-slate-500">
-                      Carregando…
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-1 rounded-lg border border-white/10 bg-white/5 p-1 text-xs">
-                  <TabBtn
-                    label="Estrutura"
-                    active={activeTab === "estrutura"}
-                    onClick={() => selectTab("estrutura")}
-                  />
-                  <TabBtn
-                    label="Dados"
-                    active={activeTab === "dados"}
-                    onClick={() => selectTab("dados")}
-                  />
-                  <TabBtn
-                    label="Diagrama"
-                    active={activeTab === "diagrama"}
-                    onClick={() => selectTab("diagrama")}
-                  />
-                </div>
-              </div>
-
-              {/* Estrutura */}
-              {activeTab === "estrutura" && renderEstrutura()}
-              {/* Dados */}
-              {activeTab === "dados" && renderDados()}
-              {/* Diagrama */}
-              {activeTab === "diagrama" && renderDiagrama()}
-            </div>
-          )}
-        </div>
-      </div>
-    </PageShell>
-  );
-}
-
-function TabBtn({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-        active
-          ? "bg-sky-400/15 text-sky-300"
-          : "text-slate-400 hover:text-white"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
+  const hasStructure =
+    !!schema &&
+    schema.columns.some((c) => c.pk > 0) &&
+    fks.length > 0;
+  const hasNoKeys =
+    !!schema &&
+    schema.columns.length > 0 &&
+    schema.columns.every((c) => c.pk === 0) &&
+    fks.length === 0;
 
   function renderEstrutura() {
     if (loadingSchema && !schema) {
@@ -537,6 +318,115 @@ function TabBtn({
       </div>
     );
   }
+
+  return (
+    <PageShell>
+      <div className="mb-6 flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold text-white">Ver Tabelas</h1>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            banco: {activeDatabase ?? "—"}
+          </span>
+          <Link
+            href="/bancos"
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 hover:border-sky-400/40 hover:text-sky-300"
+          >
+            ← Voltar para Bancos
+          </Link>
+        </div>
+        <p className="text-sm text-slate-400">
+          Navegue pela estrutura e dados das tabelas do banco, estilo phpMyAdmin.
+        </p>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Lista de tabelas */}
+        <div className="lg:col-span-1">
+          <h2 className="mb-2 text-xs font-semibold text-slate-400">
+            Tabelas ({tables.length})
+          </h2>
+          {tables.length === 0 ? (
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-center text-sm text-slate-500">
+              Nenhuma tabela neste banco.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {tables.map((t: TableInfo) => {
+                const isActive = t.name === selectedTable;
+                return (
+                  <button
+                    key={t.name}
+                    onClick={() => void loadSchema(t.name)}
+                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left font-mono text-xs transition-colors ${
+                      isActive
+                        ? "border-sky-400/40 bg-sky-400/10 text-sky-200"
+                        : "border-white/10 bg-white/5 text-slate-300 hover:border-sky-400/30 hover:bg-white/10"
+                    }`}
+                    title={`Ver estrutura e dados de ${t.name}`}
+                  >
+                    <span className="truncate">{t.name}</span>
+                    <span className="ml-2 rounded-full border border-white/10 bg-black/20 px-1.5 py-0.25 text-[10px] text-slate-400">
+                      {loadingCounts ? "…" : counts[t.name] ?? 0}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Detalhe da tabela selecionada */}
+        <div className="lg:col-span-2">
+          {!selectedTable ? (
+            <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-500">
+              Selecione uma tabela para ver sua estrutura e dados.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Cabeçalho da aba */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm font-semibold text-sky-300">
+                    {selectedTable}
+                  </span>
+                  {loadingSchema && (
+                    <span className="text-[11px] text-slate-500">
+                      Carregando…
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-1 rounded-lg border border-white/10 bg-white/5 p-1 text-xs">
+                  <TabBtn
+                    label="Estrutura"
+                    active={activeTab === "estrutura"}
+                    onClick={() => selectTab("estrutura")}
+                  />
+                  <TabBtn
+                    label="Dados"
+                    active={activeTab === "dados"}
+                    onClick={() => selectTab("dados")}
+                  />
+                  <TabBtn
+                    label="Diagrama"
+                    active={activeTab === "diagrama"}
+                    onClick={() => selectTab("diagrama")}
+                  />
+                </div>
+              </div>
+
+              {/* Estrutura */}
+              {activeTab === "estrutura" && renderEstrutura()}
+              {/* Dados */}
+              {activeTab === "dados" && renderDados()}
+              {/* Diagrama */}
+              {activeTab === "diagrama" && renderDiagrama()}
+            </div>
+          )}
+        </div>
+      </div>
+    </PageShell>
+  );
 }
 
 function TabBtn({
