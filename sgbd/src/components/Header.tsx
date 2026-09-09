@@ -17,6 +17,7 @@ export function Header() {
   const pathname = usePathname();
   const { tables } = useDb();
   const { user, loading, signOut } = useAuth();
+  const visibleLinks = links.filter((l) => l.href === "/" || !!user);
 
   return (
     <header className="sticky top-0 z-30 w-full border-b border-white/10 bg-slate-950/60 shadow-[0_8px_30px_rgba(2,6,23,0.5)] backdrop-blur-xl">
@@ -29,7 +30,7 @@ export function Header() {
           SGBD
         </Link>
         <nav className="flex items-center gap-1 text-xs text-slate-400">
-          {links.map((l) => {
+          {visibleLinks.map((l) => {
             const active =
               l.href !== "/" && pathname?.startsWith(l.href);
             return (
@@ -46,12 +47,14 @@ export function Header() {
               </Link>
             );
           })}
-          <span
-            className="ml-2 rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 font-mono text-sky-300"
-            title="Tabelas carregadas"
-          >
-            {tables.length} tabela{tables.length === 1 ? "" : "s"}
-          </span>
+          {user && (
+            <span
+              className="ml-2 rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 font-mono text-sky-300"
+              title="Tabelas carregadas"
+            >
+              {tables.length} tabela{tables.length === 1 ? "" : "s"}
+            </span>
+          )}
         </nav>
         <div className="ml-3 flex shrink-0 items-center gap-2">
           {loading ? (

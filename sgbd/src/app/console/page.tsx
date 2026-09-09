@@ -6,6 +6,7 @@ import { PageShell } from "@/components/PageShell";
 import { SqlEditor } from "@/components/SqlEditor";
 import { ResultTable } from "@/components/ResultTable";
 import { TableList } from "@/components/TableList";
+import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
 import { getSchemaCompletions, getTableSchema } from "@/lib/sqlite/db";
 import type { SQLNamespace } from "@codemirror/lang-sql";
@@ -140,7 +141,8 @@ function ConsoleInner() {
   );
 
   return (
-    <PageShell>
+    <RequireAuth>
+      <PageShell>
       {/* Seletor de banco ativo */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
         <label className="text-xs font-semibold text-slate-400">Banco ativo:</label>
@@ -281,5 +283,6 @@ function ConsoleInner() {
         </div>
       </div>
     </PageShell>
+    </RequireAuth>
   );
 }

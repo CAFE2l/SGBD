@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
 import { useDb } from "@/hooks/useDb";
+import { RequireAuth } from "@/components/RequireAuth";
 import { dropDatabase, inspectDatabase } from "@/lib/sqlite/db";
 import { getHistory, type HistoryEntry } from "@/lib/sqlite/history";
 
@@ -127,7 +128,8 @@ export default function BancosPage() {
   );
 
   return (
-    <PageShell>
+    <RequireAuth>
+      <PageShell>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Bancos de Dados</h1>
@@ -211,6 +213,13 @@ export default function BancosPage() {
                   >
                     Abrir no Console
                   </Link>
+                  <Link
+                    href={`/tabelas?db=${encodeURIComponent(name)}`}
+                    className="rounded-lg bg-emerald-400/15 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-400/25"
+                    title="Navegar tabelas e estrutura (estilo phpMyAdmin)"
+                  >
+                    Ver Tabelas
+                  </Link>
                   {confirmDelete === name ? (
                     <span className="flex items-center gap-1">
                       <button
@@ -285,5 +294,6 @@ export default function BancosPage() {
         </div>
       )}
     </PageShell>
+    </RequireAuth>
   );
 }

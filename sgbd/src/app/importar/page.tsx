@@ -7,6 +7,7 @@ import { PageShell } from "@/components/PageShell";
 import { FileDropzone } from "@/components/FileDropzone";
 import { ResultTable } from "@/components/ResultTable";
 import { SchemaDiagram } from "@/components/SchemaDiagram";
+import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
 import { getTableData, getActiveDatabase } from "@/lib/sqlite/db";
 import type { ImportReport, QueryResult } from "@/lib/sqlite/types";
@@ -148,7 +149,8 @@ export default function ImportarPage() {
   };
 
   return (
-    <PageShell>
+    <RequireAuth>
+      <PageShell>
       <h1 className="text-2xl font-bold text-white">Importar dados</h1>
       <p className="mt-1 text-sm text-slate-400">
         Envie um arquivo <code className="text-sky-300">.sql</code> (dump) ou{" "}
@@ -271,6 +273,7 @@ export default function ImportarPage() {
         )}
       </div>
     </PageShell>
+    </RequireAuth>
   );
 }
 

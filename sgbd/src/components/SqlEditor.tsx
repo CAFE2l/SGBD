@@ -5,7 +5,14 @@ import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { sql, type SQLNamespace } from "@codemirror/lang-sql";
-import { closeCompletion } from "@codemirror/autocomplete";
+import {
+  acceptCompletion,
+  autocompletion,
+  closeCompletion,
+  completionStatus,
+  moveCompletionSelection,
+  startCompletion,
+} from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 
 interface SqlEditorProps {
@@ -63,6 +70,31 @@ export function SqlEditor({
               return true;
             },
           },
+        ])
+      ),
+      autocompletion({ defaultKeymap: false }),
+      Prec.high(
+        keymap.of([
+          { key: "Ctrl-Space", run: startCompletion },
+          { mac: "Alt-`", run: startCompletion },
+          { mac: "Alt-i", run: startCompletion },
+          { key: "Escape", run: closeCompletion },
+          {
+            key: "Tab",
+            run: (view) =>
+              completionStatus(view) === "active" ? acceptCompletion(view) : false,
+          },
+          {
+            key: "Enter",
+            run: (view) => {
+              if (completionStatus(view) === "active") closeCompletion(view);
+              return false;
+            },
+          },
+          { key: "ArrowDown", run: moveCompletionSelection(true) },
+          { key: "ArrowUp", run: moveCompletionSelection(false) },
+          { key: "PageDown", run: moveCompletionSelection(true, "page") },
+          { key: "PageUp", run: moveCompletionSelection(false, "page") },
         ])
       ),
       basicSetup,

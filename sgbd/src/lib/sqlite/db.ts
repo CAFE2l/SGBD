@@ -20,7 +20,6 @@ import type {
   QueryScriptResult,
   ImportReport,
 } from "./types";
-import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 
 /**
@@ -85,15 +84,20 @@ export async function getSchemaCompletions(
 
   const engine = await ensureActiveEngine();
   const schema: Record<string, SQLNamespace> = {};
-  const tables = await listTables(engine);
+  const tables = (await listTables(engine)).slice().sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
 
   for (const table of tables) {
     const tableSchema = await getTableSchema(table.name, engine);
-    const columns: Completion[] = tableSchema.columns.map((column) => ({
-      label: column.name,
-      type: "property",
-      detail: column.type || "TEXT",
-    }));
+    const columns = tableSchema.columns
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((column) => ({
+        label: column.name,
+        type: "property" as const,
+        detail: column.type || "TEXT",
+      }));
     schema[table.name] = {
       self: {
         label: table.name,

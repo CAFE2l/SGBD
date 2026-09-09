@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
+import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
 import {
   exportSql,
@@ -151,7 +152,8 @@ export default function ExportarPage() {
   }
 
   return (
-    <PageShell>
+    <RequireAuth>
+      <PageShell>
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Exportar</h1>
@@ -285,6 +287,7 @@ export default function ExportarPage() {
         </div>
       )}
     </PageShell>
+    </RequireAuth>
   );
 }
 
