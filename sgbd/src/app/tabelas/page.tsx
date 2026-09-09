@@ -13,6 +13,7 @@ import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
 import { ResultTable } from "@/components/ResultTable";
 import { SchemaDiagram } from "@/components/SchemaDiagram";
+import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
 import {
   getTableSchema,
@@ -29,9 +30,11 @@ const DATA_LIMIT = 100;
 
 export default function TabelasPage() {
   return (
-    <Suspense fallback={<PageShell>Carregando navegador de tabelas…</PageShell>}>
-      <TabelasInner />
-    </Suspense>
+    <RequireAuth>
+      <Suspense fallback={<PageShell>Carregando navegador de tabelas…</PageShell>}>
+        <TabelasInner />
+      </Suspense>
+    </RequireAuth>
   );
 }
 
@@ -162,15 +165,101 @@ function TabelasInner() {
     return m;
   }, [fks]);
 
-  const hasStructure =
-    !!schema &&
-    schema.columns.some((c) => c.pk > 0) &&
-    fks.length > 0;
-  const hasNoKeys =
-    !!schema &&
-    schema.columns.length > 0 &&
-    schema.columns.every((c) => c.pk === 0) &&
-    fks.length === 0;
+  const renderEstrutura = () => {
+    if (loadingSchema) {
+      return (
+        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-slate-400">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          Carregando estrutura…
+        </div>
+      );
+    }
+    if (!schema) {
+      return (
+        <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-slate-500">
+          Não foi possível carregar a estrutura da tabela.
+        </div>
+      );
+    }
+    return (
+      <div className="overflow-hidden rounded-xl border border-white/10">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-slate-900/80 text-slate-400">
+            <tr>
+              <th className="px-3 py-2">Coluna</th>
+              <th className="px-3 py-2">Tipo</th>
+              <th className="px-3 py-2 text-center">PK</th>
+              <th className="px-3 py-2 text-center">NOT NULL</th>
+              <th className="px-3 py-2">Default</th>
+            </tr>
+          </thead>
+          <tbody>
+            {schema.columns.map((c) => (
+              <tr key={c.name} className="border-t border-white/5">
+                <td className="px-3 py-2 font-mono text-sky-300">{c.name}</td>
+                <td className="px-3 py-2 font-mono text-slate-300">
+                  {c.type || "TEXT"}
+                </td>
+                <td className="px-3 py-2 text-center text-amber-300">
+                  {c.pk > 0 ? "✔" : ""}
+                </td>
+                <td className="px-3 py-2 text-center text-slate-400">
+                  {c.notnull ? "✔" : ""}
+                </td>
+                <td className="px-3 py-2 font-mono text-slate-400">
+                  {c.dflt_value ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {fks.length > 0 && (
+          <div className="border-t border-white/10 bg-black/20 px-3 py-2">
+            <p className="mb-1 text-[11px] font-semibold text-slate-400">
+              Chaves estrangeiras
+            </p>
+            <ul className="space-y-0.5">
+              {fks.map((fk, i) => (
+                <li key={i} className="font-mono text-[11px] text-slate-300">
+                  {fk.from} → {fk.table}.{fk.to}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderDados = () => {
+    if (loadingRows || !rowData) {
+      return (
+        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-slate-400">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          Carregando dados…
+        </div>
+      );
+    }
+    return (
+      <ResultTable
+        columns={rowData.columns}
+        rows={rowData.rows}
+        emptyMessage={rowData.message}
+        pageSize={20}
+      />
+    );
+  };
+
+  const renderDiagrama = () => {
+    if (tables.length === 0) {
+      return (
+        <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-500">
+          Nenhuma tabela para exibir no diagrama.
+        </div>
+      );
+    }
+    return <SchemaDiagram tables={tables.map((t) => t.name)} />;
+  };
 
   return (
     <PageShell>
@@ -280,6 +369,30 @@ function TabelasInner() {
       </div>
     </PageShell>
   );
+}
+
+function TabBtn({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+        active
+          ? "bg-sky-400/15 text-sky-300"
+          : "text-slate-400 hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
 
   function renderEstrutura() {
     if (loadingSchema && !schema) {
