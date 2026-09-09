@@ -82,12 +82,12 @@ export function SqlEditor({
           {
             key: "Tab",
             run: (view) =>
-              completionStatus(view) === "active" ? acceptCompletion(view) : false,
+              completionStatus(view.state) === "active" ? acceptCompletion(view) : false,
           },
           {
             key: "Enter",
             run: (view) => {
-              if (completionStatus(view) === "active") closeCompletion(view);
+              if (completionStatus(view.state) === "active") closeCompletion(view);
               return false;
             },
           },
