@@ -1,0 +1,107 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import { isFirebaseConfigured } from "@/lib/config";
+import {
+  onAuthChange,
+  signInWithGoogle as googleSignIn,
+  signInWithEmail as emailSignIn,
+  signUpWithEmail as emailSignUp,
+  signOut as firebaseSignOut,
+  type User,
+} from "@/lib/firebase/auth";
+
+interface AuthContextValue {
+  /** Usuário autenticado via Firebase, ou null quando anônimo. */
+  user: User | null;
+  /** true enquanto resolvemos o estado da sessão no primeiro carregamento. */
+  loading: boolean;
+  /** true se as variáveis NEXT_PUBLIC_FIREBASE_* estão presentes. */
+  configured: boolean;
+  signInGoogle: () => Promise<User | null>;
+  signInEmail: (email: string, password: string) => Promise<User | null>;
+  signUpEmail: (
+    name: string,
+    email: string,
+    password: string
+  ) => Promise<User | null>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [configured] = useState(() => isFirebaseConfigured());
+
+  useEffect(() => {
+    const unsubscribe = onAuthChange((u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const signInGoogle = useCallback(async () => {
+    const u = await googleSignIn();
+    setUser(u);
+    return u;
+  }, []);
+
+  const signInEmail = useCallback(
+    async (email: string, password: string) => {
+      const u = await emailSignIn(email, password);
+      setUser(u);
+      return u;
+    },
+    []
+  );
+
+  const signUpEmail = useCallback(
+    async (name: string, email: string, password: string) => {
+      const u = await emailSignUp(name, email, password);
+      setUser(u);
+      return u;
+    },
+    []
+  );
+
+  const signOut = useCallback(async () => {
+    await firebaseSignOut();
+    setUser(null);
+  }, []);
+
+  const value = useMemo(
+    () => ({
+      user,
+      loading,
+      configured,
+      signInGoogle,
+      signInEmail,
+      signUpEmail,
+      signOut,
+    }),
+    [user, loading, configured, signInGoogle, signInEmail, signUpEmail, signOut]
+  );
+
+  return (
+    <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  );
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth deve ser usado dentro de <AuthProvider>");
+  }
+  return ctx;
+}

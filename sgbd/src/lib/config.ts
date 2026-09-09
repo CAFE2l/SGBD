@@ -11,6 +11,12 @@ export const config = {
       process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "",
     appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "",
   },
+  cloudinary: {
+    cloudName: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ?? "",
+    apiKey: process.env.CLOUDINARY_API_KEY ?? "",
+    apiSecret: process.env.CLOUDINARY_API_SECRET ?? "",
+    uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET ?? "",
+  },
   queryTimeoutMs: Number(process.env.QUERY_TIMEOUT_MS ?? 10_000),
   schemaTtlHours: Number(process.env.SCHEMA_TTL_HOURS ?? 24),
 };
@@ -23,5 +29,13 @@ export function isFirebaseConfigured(): boolean {
   return (
     config.firebase.apiKey.length > 0 &&
     config.firebase.projectId.length > 0
+  );
+}
+
+export function isCloudinaryConfigured(): boolean {
+  return (
+    config.cloudinary.cloudName.length > 0 &&
+    config.cloudinary.apiKey.length > 0 &&
+    config.cloudinary.apiSecret.length > 0
   );
 }

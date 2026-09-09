@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { DbProvider } from "@/hooks/useDb";
+import { AuthProvider } from "@/hooks/useAuth";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -24,7 +25,9 @@ export default function RootLayout({
       <body
         className={`${inter.variable} min-h-screen bg-[#0a0e1a] text-foreground antialiased`}
       >
-        <DbProvider>{children}</DbProvider>
+        <AuthProvider>
+          <DbProvider>{children}</DbProvider>
+        </AuthProvider>
       </body>
     </html>
   );
