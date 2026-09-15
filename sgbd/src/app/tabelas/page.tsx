@@ -41,6 +41,7 @@ export default function TabelasPage() {
 function TabelasInner() {
   const searchParams = useSearchParams();
   const requestedDb = searchParams.get("db");
+  const requestedTable = searchParams.get("table");
   const appliedDbParam = useRef(false);
 
   const { tables, activeDatabase, switchDatabase } = useDb();
@@ -95,13 +96,15 @@ function TabelasInner() {
     loadCounts();
   }, [loadCounts]);
 
-  // Auto-seleciona a primeira tabela ao carregar a lista.
+  // Auto-seleciona a primeira tabela — ou ?table= (link do /perfil).
   useEffect(() => {
     if (tables.length > 0 && !selectedTable) {
-      const initial = tables[0]?.name;
-      if (initial) {
-        setSelectedTable(initial);
-        setActiveTab("estrutura");
+      const wanted = requestedTable && tables.some((t) => t.name === requestedTable)
+        ? requestedTable
+        : tables[0]?.name;
+      if (wanted) {
+        setSelectedTable(wanted);
+        setActiveTab("dados");
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

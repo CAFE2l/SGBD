@@ -93,19 +93,18 @@ export async function persistDatabaseBytes(
 
 /**
  * Recupera o binário de um banco nomeado, ou null se não existir.
+ * Inclui fallback para chaves legadas não-escopadas (migração de contas
+ * criadas antes do escopo por usuário).
  */
 export async function loadDatabaseBytes(
   name: string
 ): Promise<Uint8Array | null> {
-  try {
-    const db = await getDB();
-    const value = (await db.get(STORE, nameToKey(name))) as
-      | Uint8Array
-      | undefined;
-    return value ?? null;
-  } catch {
-    return null;
-  }
+  const scoped = nameToKey(name);
+  const found = await getWithFallback<Uint8Array>(scoped, [
+    `${NAME_PREFIX}${name}`,
+    `anon:${NAME_PREFIX}${name}`,
+  ]);
+  return found ?? null;
 }
 
 /**
@@ -128,7 +127,7 @@ export async function persistRegistry(
 ): Promise<boolean> {
   try {
     const db = await getDB();
-    await db.put(STORE, registry, REGISTRY_KEY);
+    await db.put(STORE, registry, regKey());
     return true;
   } catch {
     return false;
@@ -137,35 +136,36 @@ export async function persistRegistry(
 
 /**
  * Carrega o registro de bancos, ou null se não existir.
+ * Tenta o escopo do usuário atual e cai para `anon:` / legado global.
  */
 export async function loadRegistry(): Promise<DatabaseRegistry | null> {
-  try {
-    const db = await getDB();
-    const value = (await db.get(STORE, REGISTRY_KEY)) as
-      | DatabaseRegistry
-      | undefined;
-    return value ?? null;
-  } catch {
-    return null;
-  }
+  return getWithFallback<DatabaseRegistry>(regKey(), [
+    REGISTRY_KEY,
+    `anon:${REGISTRY_KEY}`,
+  ]);
 }
 
 /**
  * Migra um banco único legado (armazenado em `database-bytes`) para a forma
  * nomeada `db:<nome>`, retornando o nome migrado ou null se não havia nada.
+ * Checa a chave crua + escopo atual.
  */
 export async function migrateLegacyDatabase(
   targetName: string
 ): Promise<string | null> {
   try {
     const db = await getDB();
-    const legacy = (await db.get(STORE, LEGACY_KEY)) as Uint8Array | undefined;
+    const legacy =
+      ((await db.get(STORE, legacyKeyRaw())) as Uint8Array | undefined) ??
+      ((await db.get(STORE, scopedKey(legacyKeyRaw()))) as
+        | Uint8Array
+        | undefined);
     if (!legacy || legacy.byteLength === 0) {
-      await db.delete(STORE, LEGACY_KEY);
+      await db.delete(STORE, legacyKeyRaw());
       return null;
     }
     await db.put(STORE, legacy, nameToKey(targetName));
-    await db.delete(STORE, LEGACY_KEY);
+    await db.delete(STORE, legacyKeyRaw());
     return targetName;
   } catch {
     return null;

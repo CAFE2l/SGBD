@@ -53,9 +53,9 @@ function ConsoleInner() {
     useState<CompletionCatalog>(emptyCatalog);
   const [acceptMode, setAcceptMode] = useState<SqlAcceptMode>("tab");
 
-  // Permite abrir /console?db=nome para já deixar o banco ativo selecionado.
-  // Aplica apenas uma vez para não "brigar" com trocas manuais posteriores.
+  // Permite abrir /console?db=nome& q=... (vindo do "Rodar novamente" do /perfil).
   const requestedDb = searchParams.get("db");
+  const requestedQuery = searchParams.get("q");
   const appliedDbParam = useRef(false);
   useEffect(() => {
     if (!requestedDb || appliedDbParam.current) return;
@@ -66,6 +66,14 @@ function ConsoleInner() {
       });
     }
   }, [requestedDb, activeDatabase, switchDatabase]);
+
+  // Query pré-preenchida via ?q= (Rodar novamente / favoritos do /perfil).
+  const appliedQueryParam = useRef(false);
+  useEffect(() => {
+    if (!requestedQuery || appliedQueryParam.current) return;
+    appliedQueryParam.current = true;
+    setSql(requestedQuery);
+  }, [requestedQuery]);
 
   useEffect(() => {
     setAcceptMode(readAcceptMode());

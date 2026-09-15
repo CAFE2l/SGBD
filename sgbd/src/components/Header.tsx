@@ -61,9 +61,10 @@ export function Header() {
             <span className="h-6 w-6 animate-spin rounded-full border-2 border-sky-400/30 border-t-sky-400" />
           ) : user ? (
             <>
-              <span
-                className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pl-1 pr-3"
-                title={user.email ?? undefined}
+              <Link
+                href="/perfil"
+                className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pl-1 pr-3 transition-colors hover:border-sky-400/40 hover:bg-sky-400/10"
+                title={user.email ? `${user.email} — ver perfil` : "Ver perfil"}
               >
                 {user.photoURL ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -80,7 +81,7 @@ export function Header() {
                 <span className="max-w-[8rem] truncate text-xs text-slate-200">
                   {user.displayName ?? user.email}
                 </span>
-              </span>
+              </Link>
               <button
                 onClick={() => void signOut()}
                 className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-white"

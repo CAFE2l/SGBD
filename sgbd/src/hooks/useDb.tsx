@@ -22,7 +22,10 @@ import {
   getActiveDatabase,
   switchActiveDatabase,
   createDatabase,
+  reloadManagerForScope,
 } from "@/lib/sqlite/db";
+import { setCurrentUid, migrateAnonToUser } from "@/lib/profile/user-scope";
+import { useAuth } from "./useAuth";
 import type {
   ImportReport,
   QueryResult,
@@ -38,7 +41,7 @@ interface DbContextValue {
   error: string | null;
   refresh: () => Promise<void>;
   switchDatabase: (name: string) => Promise<void>;
-  createNewDatabase: (name: string) => Promise<string>;
+  createNewDatabase: (name: string, engine?: string) => Promise<string>;
   executeScript: (sql: string) => Promise<QueryScriptResult>;
   executeQuery: (sql: string) => Promise<QueryResult>;
   importSqlScript: (sql: string) => Promise<ImportReport>;
@@ -53,6 +56,9 @@ interface DbContextValue {
 const DbContext = createContext<DbContextValue | null>(null);
 
 export function DbProvider({ children }: { children: ReactNode }) {
+  // AuthProvider envolve DbProvider no layout: reage à troca de conta
+  // redefinindo o escopo do IndexedDB e recarregando o registry.
+  const { user: authUser } = useAuth();
   const [ready, setReady] = useState(false);
   const [databases, setDatabases] = useState<string[]>([]);
   const [activeDatabase, setActiveDatabase] = useState<string | null>(null);
@@ -80,11 +86,18 @@ export function DbProvider({ children }: { children: ReactNode }) {
     }
   }, [syncState]);
 
+  // Escopo por usuário: quando a conta muda (login/logout/troca), aponta o
+  // IndexedDB para o namespace do uid e recarrega tudo. Sair e voltar no
+  // mesmo navegador restaura os bancos porque o uid é estável.
+  const uid = authUser?.uid ?? null;
   useEffect(() => {
     mounted.current = true;
     (async () => {
       try {
-        await initDatabase();
+        setReady(false);
+        setCurrentUid(uid);
+        if (uid) await migrateAnonToUser(uid);
+        await reloadManagerForScope();
         if (mounted.current) {
           syncState();
           const t = await listTables();
@@ -101,7 +114,8 @@ export function DbProvider({ children }: { children: ReactNode }) {
     return () => {
       mounted.current = false;
     };
-  }, [syncState]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid]);
 
   const switchDatabase = useCallback(
     async (name: string) => {
@@ -112,8 +126,9 @@ export function DbProvider({ children }: { children: ReactNode }) {
   );
 
   const createNewDatabase = useCallback(
-    async (name: string) => {
-      await createDatabase(name);
+    async (name: string, engine?: string) => {
+      const { engineOrDefault } = await import("@/lib/profile/engines");
+      await createDatabase(name, engineOrDefault(engine));
       await refresh();
       return name;
     },

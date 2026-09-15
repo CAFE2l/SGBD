@@ -234,6 +234,45 @@ export async function setDatabaseEngine(
   await persistRegistry(registry);
 }
 
+/**
+ * Reseta o cache em memória do gerenciador (troca de usuário).
+ * A próxima chamada de `initManager()` recarrega o registry do escopo novo.
+ */
+export function resetManagerCache(): void {
+  if (active) {
+    try {
+      active.db.close();
+    } catch {
+      // silencioso
+    }
+  }
+  active = null;
+  registry = { databases: [], activeDatabase: null };
+  managerInitPromise = null;
+}
+
+/** Força recarregar o registry do escopo atual (após login/logout). */
+export async function reloadManagerForScope(): Promise<void> {
+  resetManagerCache();
+  await initManager();
+  await ensureActiveEngine();
+}
+
+/** Estatísticas agregadas do usuário corrente (contadores do /perfil). */
+export function getProfileStats(): {
+  totalQueries: number;
+  totalTablesCreated: number;
+  totalDatabasesCreated: number;
+} {
+  const s = registry.stats;
+  return {
+    totalQueries: s?.totalQueries ?? 0,
+    totalTablesCreated: s?.totalTablesCreated ?? 0,
+    totalDatabasesCreated:
+      s?.totalDatabasesCreated ?? registry.databases.length,
+  };
+}
+
 /** Lista os nomes dos bancos existentes. */
 export function listDatabases(): string[] {
   return [...registry.databases];
@@ -411,6 +450,7 @@ export async function inspectDatabase(
   tableCount: number;
   createdAt: number | null;
   updatedAt: number | null;
+  engine: EngineId;
 }> {
   await initManager();
   if (!registry.databases.includes(name)) {
@@ -447,10 +487,175 @@ export async function inspectDatabase(
     tableCount,
     createdAt: m?.createdAt ?? null,
     updatedAt: m?.updatedAt ?? null,
+    engine: engineOrDefault(m?.engine),
   };
 }
 
-/** Lista as tabelas do banco ativo. */
+/** Renomeia um banco (bytes + registry + meta + histórico). */
+export async function renameDatabase(
+  oldName: string,
+  newName: string
+): Promise<string> {
+  await initManager();
+  const clean = sanitizeName(newName);
+  if (!clean) throw new Error("Nome de banco inválido.");
+  if (!registry.databases.includes(oldName)) {
+    throw new Error(`Banco "${oldName}" não encontrado.`);
+  }
+  if (registry.databases.includes(clean)) {
+    throw new Error(`Banco "${clean}" já existe.`);
+  }
+  const bytes = await loadDatabaseBytes(oldName);
+  const sql = await getSql();
+  const fresh =
+    bytes && bytes.byteLength > 0 ? new sql.Database(bytes) : new sql.Database();
+  if (active?.name === oldName) {
+    try {
+      active.db.close();
+    } catch {
+      // silencioso
+    }
+    active = { name: clean, db: fresh };
+  }
+  await persistDatabaseBytes(clean, fresh.export());
+  if (active?.name !== clean) {
+    try {
+      fresh.close();
+    } catch {
+      // silencioso
+    }
+  }
+  await deleteDatabaseBytes(oldName);
+  registry.databases = registry.databases.map((n) =>
+    n === oldName ? clean : n
+  );
+  if (registry.activeDatabase === oldName) registry.activeDatabase = clean;
+  if (registry.meta?.[oldName]) {
+    if (!registry.meta) registry.meta = {};
+    registry.meta[clean] = { ...registry.meta[oldName], updatedAt: Date.now() };
+    delete registry.meta[oldName];
+  }
+  await persistRegistry(registry);
+  await ensureActiveEngine();
+  return clean;
+}
+
+/** Duplica um banco (cópia profunda dos bytes + meta nova). */
+export async function duplicateDatabase(
+  source: string,
+  target?: string
+): Promise<string> {
+  await initManager();
+  if (!registry.databases.includes(source)) {
+    throw new Error(`Banco "${source}" não encontrado.`);
+  }
+  let clean = sanitizeName(target ?? `${source}_copia`);
+  if (!clean) throw new Error("Nome de banco inválido.");
+  if (registry.databases.includes(clean)) {
+    let i = 2;
+    while (registry.databases.includes(`${clean}_${i}`)) i++;
+    clean = `${clean}_${i}`;
+  }
+  const bytes =
+    active?.name === source ? active.db.export() : await loadDatabaseBytes(source);
+  const sql = await getSql();
+  const copy =
+    bytes && bytes.byteLength > 0 ? new sql.Database(bytes) : new sql.Database();
+  if (active) saveActive();
+  active = { name: clean, db: copy };
+  registry.databases.push(clean);
+  registry.activeDatabase = clean;
+  const srcMeta = registry.meta?.[source];
+  if (!registry.meta) registry.meta = {};
+  const now = Date.now();
+  registry.meta[clean] = {
+    createdAt: now,
+    updatedAt: now,
+    engine: engineOrDefault(srcMeta?.engine),
+  };
+  if (!registry.stats) {
+    registry.stats = { totalQueries: 0, totalTablesCreated: 0, totalDatabasesCreated: 0 };
+  }
+  registry.stats.totalDatabasesCreated += 1;
+  await persistRegistry(registry);
+  void persistDatabaseBytes(clean, copy.export());
+  return clean;
+}
+
+/** Dump SQL de qualquer banco (sem trocar o ativo). */
+export async function exportDatabaseSql(name: string): Promise<string> {
+  await initManager();
+  if (!registry.databases.includes(name)) throw new Error(`Banco "${name}" não encontrado.`);
+  if (active?.name === name) {
+    const { exportSql } = await import("./sqlite/db");
+    return exportSql();
+  }
+  const sql = await getSql();
+  const bytes = await loadDatabaseBytes(name);
+  if (!bytes || bytes.byteLength === 0) return "-- banco vazio\n";
+  const db = new sql.Database(bytes);
+  try {
+    const res = db.exec("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;");
+    const parts = [`-- Dump do banco "${name}"`, "PRAGMA foreign_keys=OFF;", "BEGIN TRANSACTION;", ""];
+    if (res.length > 0) {
+      for (const row of res[0].values) {
+        const tname = String(row[0]);
+        parts.push(row[1] ? String(row[1]) : `CREATE TABLE "${tname}";`);
+        parts.push("");
+        try {
+          const data = db.exec(`SELECT * FROM "${tname}";`);
+          if (data.length > 0) {
+            const cols = data[0].columns.map((c) => `"${c}"`).join(", ");
+            for (const r of data[0].values) {
+              const vals = r.map((v) => v === null ? "NULL" : typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`).join(", ");
+              parts.push(`INSERT INTO "${tname}" (${cols}) VALUES (${vals});`);
+            }
+            parts.push("");
+          }
+        } catch { /* ignora dados ilegíveis */ }
+      }
+    }
+    parts.push("COMMIT;");
+    return parts.join("\n");
+  } finally {
+    db.close();
+  }
+}
+
+/** Tabelas + linhas de um banco (cards do /perfil). */
+export async function describeDatabase(name: string): Promise<{ tableCount: number; rowCount: number; tables: { name: string; rows: number }[] }> {
+  await initManager();
+  if (!registry.databases.includes(name)) throw new Error(`Banco "${name}" não encontrado.`);
+  const sql = await getSql();
+  let db: Database | null = null;
+  let owned = false;
+  try {
+    if (active?.name === name) { db = active.db; }
+    else {
+      const bytes = await loadDatabaseBytes(name);
+      if (!bytes || bytes.byteLength === 0) return { tableCount: 0, rowCount: 0, tables: [] };
+      db = new sql.Database(bytes);
+      owned = true;
+    }
+    const res = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;");
+    const names: string[] = res.length > 0 ? res[0].values.map((r) => String(r[0])) : [];
+    const tables: { name: string; rows: number }[] = [];
+    let rowCount = 0;
+    for (const t of names) {
+      let rows = 0;
+      try {
+        const c = db.exec(`SELECT COUNT(*) FROM "${t}"`);
+        rows = Number(c[0]?.values[0]?.[0] ?? 0);
+      } catch { rows = 0; }
+      tables.push({ name: t, rows });
+      rowCount += rows;
+    }
+    return { tableCount: names.length, rowCount, tables };
+  } finally {
+    if (owned && db) { try { db.close(); } catch { /* silencioso */ } }
+  }
+}
+
 export async function listTablesActive(): Promise<TableInfo[]> {
   const engine = await ensureActiveEngine();
   return listTables(engine);
@@ -618,39 +823,105 @@ function sanitizeName(name: string): string {
 /**
  * Executa um comando SQL real no motor ativo (CREATE TABLE, INSERT, SELECT…).
  * `engine` é omitido para usar o banco ativo atual.
+ *
+ * Instrumentação (base do /perfil):
+ * - normaliza o dialeto do motor do banco (MySQL/Postgres → SQLite);
+ * - traduz sintaxe Mongo (`db.col.find`) para SQL equivalente;
+ * - mede `durationMs` e grava TODA execução no log global com status.
  */
 export async function executeSql(
   sql: string,
   engine?: Database
 ): Promise<QueryResult> {
   const useDb = engine ?? (await ensureActiveEngine());
+  const dbName = registry.activeDatabase ?? "—";
+  const eng = dbName !== "—" ? getDatabaseEngine(dbName) : "postgres";
+  // Mongo: tenta traduzir antes de normalizar.
+  const mongoTranslated =
+    eng === "mongodb" ? translateMongoToSql(sql) : null;
+  const normalized = normalizeDialect(mongoTranslated ?? sql, eng);
+  const started = performance.now();
   const beforeRows = useDb.getRowsModified();
   let lastResult: QueryResult | null = null;
 
-  const results = useDb.exec(sql);
-  if (results.length > 0) {
-    const last = results[results.length - 1];
-    lastResult = resultToObject(
-      last.columns,
-      last.values,
-      `${last.values.length} linha(s) retornada(s)`
-    );
-  }
-
-  if (lastResult) {
-    saveActive();
-    return lastResult;
-  }
-
-  const affected = useDb.getRowsModified() - beforeRows;
-  saveActive();
-  return {
-    columns: [],
-    rows: [],
-    isSelect: false,
-    affected,
-    message: `${affected} linha(s) afetada(s)`,
+  const finish = async (
+    r: QueryResult | null,
+    success: boolean,
+    message: string
+  ): Promise<QueryResult> => {
+    const durationMs = Math.max(0, Math.round(performance.now() - started));
+    bumpQueryStats();
+    void appendGlobalQueryLog({
+      timestamp: Date.now(),
+      database: dbName,
+      query: sql,
+      command: mongoTranslated ? "FIND" : firstKeyword(normalized),
+      success,
+      message,
+      durationMs,
+      engine: eng,
+    });
+    if (!r) {
+      return {
+        columns: [],
+        rows: [],
+        isSelect: false,
+        affected: 0,
+        message,
+      };
+    }
+    return r;
   };
+
+  try {
+    const results = useDb.exec(normalized);
+    if (results.length > 0) {
+      const last = results[results.length - 1];
+      lastResult = resultToObject(
+        last.columns,
+        last.values,
+        `${last.values.length} linha(s) retornada(s)`
+      );
+    }
+
+    if (lastResult) {
+      saveActive();
+      return finish(lastResult, true, lastResult.message);
+    }
+
+    const affected = useDb.getRowsModified() - beforeRows;
+    saveActive();
+    return finish(
+      {
+        columns: [],
+        rows: [],
+        isSelect: false,
+        affected,
+        message: `${affected} linha(s) afetada(s)`,
+      },
+      true,
+      `${affected} linha(s) afetada(s)`
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const friendly = friendlyError(normalized, msg);
+    await finish(null, false, friendly);
+    throw new Error(friendly);
+  }
+}
+
+/** Incrementa contadores de queries/tabelas do usuário corrente. */
+function bumpQueryStats(byTables = 0): void {
+  if (!registry.stats) {
+    registry.stats = {
+      totalQueries: 0,
+      totalTablesCreated: 0,
+      totalDatabasesCreated: registry.databases.length,
+    };
+  }
+  registry.stats.totalQueries += 1;
+  if (byTables > 0) registry.stats.totalTablesCreated += byTables;
+  void persistRegistry(registry);
 }
 
 interface StatementOutcome {

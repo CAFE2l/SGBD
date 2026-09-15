@@ -46,6 +46,15 @@ export {
   initManager,
   inspectDatabase,
   recordDatabaseActivity,
+  renameDatabase,
+  duplicateDatabase,
+  exportDatabaseSql,
+  describeDatabase,
+  getDatabaseEngine,
+  setDatabaseEngine,
+  getProfileStats,
+  reloadManagerForScope,
+  resetManagerCache,
 } from "@/lib/database-manager";
 
 /** Persiste o estado atual do banco ativo (autosave). */
