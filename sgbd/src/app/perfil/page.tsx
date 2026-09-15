@@ -7,10 +7,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { useDb } from "@/hooks/useDb";
 import { ENGINES, engineOrDefault, type EngineId } from "@/lib/profile/engines";
 import { buildJsonSql } from "@/lib/profile/json-import";
-import { describeDatabase, duplicateDatabase, exportDatabaseSql, getDatabaseEngine, getProfileStats, inspectDatabase, renameDatabase, switchActiveDatabase, dropDatabase, importSql as importSqlInto } from "@/lib/sqlite/db";
+import { describeDatabase, duplicateDatabase, exportDatabaseSql, getDatabaseEngine, getProfileStats, importCsv, inspectDatabase, renameDatabase, switchActiveDatabase, dropDatabase, importSql as importSqlInto } from "@/lib/sqlite/db";
 import { appendIoHistory, getFavorites, getGlobalQueryLog, getIoHistory, toggleFavorite, type FavoriteEntry, type GlobalQueryEntry, type IoHistoryEntry } from "@/lib/sqlite/history";
 import { DbCards, IoSection, QueryHistory, Stat, TablesByDb } from "./sections";
 import { download, type DbCard } from "./types";
+import Papa from "papaparse";
 
 export default function PerfilPage() {
   return (<RequireAuth><PageShell><PerfilInner /></PageShell></RequireAuth>);
@@ -40,6 +41,8 @@ function PerfilInner() {
   const [pageOk, setPageOk] = useState<string | null>(null);
   const [expandedDb, setExpandedDb] = useState<string | null>(null);
   const [jsonMsg, setJsonMsg] = useState<string | null>(null);
+  const [sqlMsg, setSqlMsg] = useState<string | null>(null);
+  const [csvMsg, setCsvMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadAll = useCallback(async () => {
@@ -165,9 +168,98 @@ function PerfilInner() {
       await appendIoHistory({ direction: "import", format: "json", fileName: file.name, database: target, tableName: analysis.suggestedTable, rows: analysis.rowCount, success: ok, message: `${analysis.shape === "relational" ? "tabela relacional" : "coleção de documentos"}: ${analysis.reason}` });
       setIoHist(await getIoHistory());
       await refresh(); await loadAll();
-      setJsonMsg(`${analysis.shape === "relational" ? "Tabela relacional" : "Coleção de documentos"} criada em "${target}": ${analysis.reason}`);
+            setJsonMsg(`${analysis.shape === "relational" ? "Tabela relacional" : "Coleção de documentos"} criada em "${target}": ${analysis.reason}`);
     } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
     finally { setBusyDb(null); }
+  };
+  const onSqlFile = async (file: File) => {
+    setPageError(null); setSqlMsg(null); setBusyDb("__import__");
+    try {
+      const text = await file.text();
+      const rep = await importSqlInto(text);
+      const ok = rep.errors.length === 0;
+      const target = activeDatabase ?? databases[0];
+      await refresh(); await loadAll();
+      void appendIoHistory({ direction: "import", format: "sql", fileName: file.name, database: target ?? "(nenhum)", success: ok, message: `${rep.tableCount} tabela(s) · ${rep.rowCount} linha(s) · ${rep.errors.length} erro(s)` });
+      setIoHist(await getIoHistory());
+      setSqlMsg(`Importado ${rep.tableCount} tabela(s) / ${rep.rowCount} linha(s). ${ok ? "" : `${rep.errors.length} erro(s).`}`);
+    } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusyDb(null); }
+  };
+  const onCsvFile = async (file: File) => {
+    setPageError(null); setCsvMsg(null); setBusyDb("__import__");
+    try {
+      const text = await file.text();
+      const parsed = Papa.parse<string[]>(text, { header: true, skipEmptyLines: true });
+      if (parsed.errors.length > 0) throw new Error(parsed.errors.map((e) => e.message).join("; "));
+      const columns: string[] = parsed.meta.fields ?? [];
+      if (!columns.length) throw new Error("CSV sem colunas.");
+      const rows: (string | null)[][] = parsed.data.map((row) => columns.map((c) => {
+                  const v = (row as unknown as Record<string, string>)[c];
+        return v == null || v === "" ? null : v;
+      }));
+      const tableName = file.name.replace(/\.csv$/i, "").replace(/[^a-zA-Z0-9_]/g, "_") || "csv_data";
+      const rep = await importCsv({ columns, rows }, tableName);
+      const ok = rep.errors.length === 0;
+      const target = activeDatabase ?? databases[0];
+      await refresh(); await loadAll();
+      void appendIoHistory({ direction: "import", format: "csv", fileName: file.name, database: target ?? "(nenhum)", tableName, rows: rep.rowCount, success: ok, message: `${rep.errors.length} erro(s)` });
+      setIoHist(await getIoHistory());
+      setCsvMsg(`Importado CSV como tabela "${tableName}" (${rep.rowCount} linha(s)). ${ok ? "" : `${rep.errors.length} erro(s).`}`);
+    } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusyDb(null); }
+  };
+  const doExportSql = async (name: string) => {
+    setBusyDb(name); setPageError(null);
+    try {
+      const prev = activeDatabase;
+      if (prev !== name) await switchActiveDatabase(name);
+      const sql = await exportDatabaseSql(name);
+      download(`${name}.sql`, sql, "application/sql");
+      void appendIoHistory({ direction: "export", format: "sql", fileName: `${name}.sql`, database: name, success: true, message: `${sql.length} chars` });
+      setIoHist(await getIoHistory());
+      setPageOk(`Banco \"${name}\" exportado como .sql.`);
+    } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusyDb(null); }
+  };
+  const doExportCsv = async (name: string) => {
+    setBusyDb(name); setPageError(null);
+    try {
+      const prev = activeDatabase;
+      if (prev !== name) await switchActiveDatabase(name);
+      const desc = await describeDatabase(name);
+      const { getTableData } = await import("@/lib/sqlite/db");
+      const parts: string[] = [];
+      for (const t of desc.tables) {
+        try {
+          const d = await getTableData(t.name, Number.MAX_SAFE_INTEGER);
+          const header = d.columns.join(",");
+          const lines = d.rows.map((r) => d.columns.map((c) => {
+            const v = r[c];
+            if (v == null) return "";
+            const s = String(v);
+            return /[\",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+          }).join(","));
+          parts.push(`# ${t.name}\n${header}\n${lines.join("\n")}`);
+        } catch { /* skip */ }
+      }
+      const blob = new Blob([parts.join("\n\n")], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${name}.csv`;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      if (prev && prev !== name) await switchActiveDatabase(prev).catch(() => undefined);
+      void appendIoHistory({ direction: "export", format: "csv", fileName: `${name}.csv`, database: name, success: true, message: `${desc.tableCount} tabela(s)` });
+      setIoHist(await getIoHistory());
+      setPageOk(`Banco \"${name}\" exportado como .csv.`);
+    } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusyDb(null); }
+  };
+  const doRerun = (db: string, query: string) => {
+    const url = `/console?db=${encodeURIComponent(db)}&q=${encodeURIComponent(query)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
   const displayName = user?.displayName ?? user?.email?.split("@")[0] ?? "Aluno";
   const createdAt = user?.metadata?.creationTime ? new Date(user.metadata.creationTime).toLocaleDateString("pt-BR") : "—";
@@ -206,12 +298,18 @@ function PerfilInner() {
         qStatus={qStatus} setQStatus={setQStatus}
         showFavOnly={showFavOnly} setShowFavOnly={setShowFavOnly}
         visibleLog={visibleLog} favKeys={favKeys} norm={norm}
-        onToggleFav={(d: string, q: string, c: string) => void doToggleFav(d, q, c)} />
+        onToggleFav={(d: string, q: string, c: string) => void doToggleFav(d, q, c)}
+        onRerun={(d: string, q: string) => void doRerun(d, q)} />
       <TablesByDb cards={cards} />
       <IoSection
         cards={cards} busyDb={busyDb} jsonMsg={jsonMsg} ioHist={ioHist}
         fileRef={fileRef} onJsonFile={(f: File) => void onJsonFile(f)}
-        onExportJson={(n: string) => void doExportJson(n)} />
+        onSqlFile={(f: File) => void onSqlFile(f)}
+        onCsvFile={(f: File) => void onCsvFile(f)}
+        onExportJson={(n: string) => void doExportJson(n)}
+        onExportSql={(n: string) => void doExportSql(n)}
+        onExportCsv={(n: string) => void doExportCsv(n)}
+        sqlMsg={sqlMsg} csvMsg={csvMsg} />
       {showPicker && <EnginePicker busy={creating} onCancel={() => setShowPicker(false)} onConfirm={(n, e) => void doCreate(n, e)} />}
     </div>
   );

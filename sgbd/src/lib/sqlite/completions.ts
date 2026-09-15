@@ -494,7 +494,7 @@ export function rankOptions(
   });
 
   return scored
-    .filter((s): s is { opt: Completion; score: number } => s != null)
+    .filter((s): s is NonNullable<typeof scored[number]> => s != null)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return a.opt.label.localeCompare(b.opt.label);

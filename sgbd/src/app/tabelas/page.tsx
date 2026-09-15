@@ -12,7 +12,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
 import { ResultTable } from "@/components/ResultTable";
-import { SchemaDiagram } from "@/components/SchemaDiagram";
+import { ErDiagram } from "@/components/ErDiagram";
 import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
 import {
@@ -313,11 +313,16 @@ function TabelasInner() {
 
   function renderDiagrama() {
     return (
-      <div className="rounded-xl border border-white/10 p-2 bg-black/20">
-        <p className="mb-2 text-[11px] font-semibold text-slate-400">
-          Relacionamentos (chaves estrangeiras) — fonte: schema real do banco
-        </p>
-        <SchemaDiagram tables={tables.map((t) => t.name)} />
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] font-semibold text-slate-400">
+            Editor de diagrama ER — fonte: schema real do banco
+          </p>
+          <span className="text-[10px] text-slate-500">
+            todas as tabelas do banco · arraste para reposicionar
+          </span>
+        </div>
+        <ErDiagram height={580} />
       </div>
     );
   }

@@ -13,6 +13,7 @@ import {
 import {
   importCsv,
   importSql,
+  importSqlWithCorrections,
   runScript,
   runQuery,
   listTables,
@@ -29,6 +30,7 @@ import type {
   ImportReport,
   QueryResult,
   QueryScriptResult,
+  SqlSuggestion,
   TableInfo,
 } from "@/lib/sqlite/types";
 
@@ -44,6 +46,11 @@ interface DbContextValue {
   executeScript: (sql: string) => Promise<QueryScriptResult>;
   executeQuery: (sql: string) => Promise<QueryResult>;
   importSqlScript: (sql: string) => Promise<ImportReport>;
+  importSqlWithCorrections: (
+    sql: string,
+    suggestions: SqlSuggestion[],
+    selectedIndexes: number[]
+  ) => Promise<ImportReport>;
   importCsvData: (
     parsed: { columns: string[]; rows: (string | null)[][] },
     tableName: string,
@@ -174,6 +181,23 @@ export function DbProvider({ children }: { children: ReactNode }) {
     [refresh]
   );
 
+  const applySqlCorrections = useCallback(
+    async (
+      sql: string,
+      suggestions: SqlSuggestion[],
+      selectedIndexes: number[]
+    ) => {
+      const report = await importSqlWithCorrections(
+        sql,
+        suggestions,
+        selectedIndexes
+      );
+      await refresh();
+      return report;
+    },
+    [refresh]
+  );
+
   const reset = useCallback(async () => {
     await resetDatabase();
     await refresh();
@@ -192,6 +216,7 @@ export function DbProvider({ children }: { children: ReactNode }) {
       executeScript,
       executeQuery,
       importSqlScript,
+      importSqlWithCorrections: applySqlCorrections,
       importCsvData,
       reset,
     }),
@@ -207,6 +232,7 @@ export function DbProvider({ children }: { children: ReactNode }) {
       executeScript,
       executeQuery,
       importSqlScript,
+      applySqlCorrections,
       importCsvData,
       reset,
     ]

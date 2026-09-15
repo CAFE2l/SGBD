@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { DbProvider } from "@/hooks/useDb";
 import { AuthProvider } from "@/hooks/useAuth";
+import "@xyflow/react/dist/style.css";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });

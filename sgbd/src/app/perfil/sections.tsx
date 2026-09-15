@@ -251,10 +251,11 @@ export interface QueryHistoryProps {
   setQStatus: (v: "all" | "ok" | "err") => void;
   showFavOnly: boolean;
   setShowFavOnly: (v: boolean | ((p: boolean) => boolean)) => void;
-  visibleLog: GlobalQueryEntry[];
+    visibleLog: GlobalQueryEntry[];
   favKeys: Set<string>;
   norm: (s: string) => string;
   onToggleFav: (db: string, q: string, c: string) => void;
+  onRerun: (db: string, query: string) => void;
 }
 
 export function QueryHistory(p: QueryHistoryProps) {
@@ -364,9 +365,15 @@ export function QueryHistory(p: QueryHistoryProps) {
                     {e.durationMs != null && ` · ${e.durationMs}ms`}
                   </span>
                 </div>
-                <p className="mt-1 truncate pl-5 font-mono text-xs text-slate-300">
+                                <p className="mt-1 truncate pl-5 font-mono text-xs text-slate-300">
                   {e.query}
                 </p>
+                <button
+                  onClick={() => p.onRerun(e.database, e.query)}
+                  className="mt-1 rounded-lg border border-sky-400/30 bg-sky-400/10 px-2 py-1 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/20"
+                >
+                  Rodar novamente
+                </button>
               </div>
             );
           })
@@ -425,10 +432,16 @@ export interface IoSectionProps {
   fileRef: FileRef;
   onJsonFile: (f: File) => void;
   onExportJson: (name: string) => void;
+  onSqlFile: (f: File) => void;
+  onCsvFile: (f: File) => void;
+  onExportSql: (name: string) => void;
+  onExportCsv: (name: string) => void;
+  sqlMsg: string | null;
+  csvMsg: string | null;
 }
 
 export function IoSection(p: IoSectionProps) {
-  return (
+    return (
     <section>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-bold text-white">Importar / Exportar</h2>
@@ -463,23 +476,101 @@ export function IoSection(p: IoSectionProps) {
           )}
         </div>
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <h3 className="text-sm font-semibold text-white">Exportação JSON</h3>
+          <h3 className="text-sm font-semibold text-white">Importação SQL</h3>
           <p className="mt-1 text-xs text-slate-500">
-            Baixa todas as tabelas do banco no formato JSON.
+            Selecione um arquivo .sql com statements CREATE TABLE / INSERT.
+          </p>
+          <input
+            type="file"
+            accept=".sql,text/sql"
+            className="hidden"
+            id="sql-import-input"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) p.onSqlFile(f);
+              e.target.value = "";
+            }}
+          />
+          <label
+            htmlFor="sql-import-input"
+            className="mt-3 block w-max cursor-pointer rounded-lg bg-sky-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-300"
+          >
+            Escolher arquivo .sql
+          </label>
+          {p.sqlMsg && (
+            <p className="mt-2 text-xs text-emerald-300">{p.sqlMsg}</p>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <h3 className="text-sm font-semibold text-white">Importação CSV</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Selecione um arquivo .csv — a primeira linha é usada como cabeçário.
+          </p>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            id="csv-import-input"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) p.onCsvFile(f);
+              e.target.value = "";
+            }}
+          />
+          <label
+            htmlFor="csv-import-input"
+            className="mt-3 block w-max cursor-pointer rounded-lg bg-sky-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-300"
+          >
+            Escolher arquivo .csv
+          </label>
+          {p.csvMsg && (
+            <p className="mt-2 text-xs text-emerald-300">{p.csvMsg}</p>
+          )}
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <h3 className="text-sm font-semibold text-white">Exportação</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Baixa o banco nos formatos JSON, SQL ou CSV.
           </p>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {p.cards.length === 0 ? (
               <p className="text-xs text-slate-500">Nenhum banco ainda.</p>
             ) : (
               p.cards.map((c) => (
-                <button
+                <div
                   key={c.name}
-                  onClick={() => p.onExportJson(c.name)}
-                  disabled={p.busyDb === c.name}
-                  className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-300 hover:border-sky-400/40 hover:text-sky-300 disabled:opacity-50"
+                  className="flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1"
                 >
-                  {p.busyDb === c.name ? "…" : c.name}
-                </button>
+                  <span className="font-mono text-xs text-slate-300">
+                    {c.name}
+                  </span>
+                  <button
+                    onClick={() => p.onExportJson(c.name)}
+                    disabled={p.busyDb === c.name}
+                    className="rounded-lg border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-sky-400/40 hover:text-sky-300 disabled:opacity-50"
+                    title="Exportar JSON"
+                  >
+                    JSON
+                  </button>
+                  <button
+                    onClick={() => p.onExportSql(c.name)}
+                    disabled={p.busyDb === c.name}
+                    className="rounded-lg border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-sky-400/40 hover:text-sky-300 disabled:opacity-50"
+                    title="Exportar SQL"
+                  >
+                    SQL
+                  </button>
+                  <button
+                    onClick={() => p.onExportCsv(c.name)}
+                    disabled={p.busyDb === c.name}
+                    className="rounded-lg border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-sky-400/40 hover:text-sky-300 disabled:opacity-50"
+                    title="Exportar CSV"
+                  >
+                    CSV
+                  </button>
+                </div>
               ))
             )}
           </div>

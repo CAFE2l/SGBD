@@ -8,6 +8,7 @@ import { FileDropzone } from "@/components/FileDropzone";
 import { ResultTable } from "@/components/ResultTable";
 import { SchemaDiagram } from "@/components/SchemaDiagram";
 import { RequireAuth } from "@/components/RequireAuth";
+import { FixSuggestionsCard } from "@/components/FixSuggestionsCard";
 import { useDb } from "@/hooks/useDb";
 import { getTableData, getActiveDatabase } from "@/lib/sqlite/db";
 import type { ImportReport, QueryResult } from "@/lib/sqlite/types";
@@ -23,7 +24,7 @@ interface CsvState {
 }
 
 export default function ImportarPage() {
-  const { tables, importSqlScript, importCsvData, databases, activeDatabase, switchDatabase, createNewDatabase } = useDb();
+  const { tables, importSqlScript, importSqlWithCorrections, importCsvData, databases, activeDatabase, switchDatabase, createNewDatabase } = useDb();
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<"idle" | "parsing" | "preview" | "done">(
     "idle"
@@ -31,6 +32,7 @@ export default function ImportarPage() {
   const [report, setReport] = useState<ImportReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sqlName, setSqlName] = useState("");
+  const [sqlText, setSqlText] = useState("");
   const [targetDb, setTargetDb] = useState<string>(() => activeDatabase ?? "");
   const [csv, setCsv] = useState<CsvState | null>(null);
   const [csvTableName, setCsvTableName] = useState("");
@@ -62,6 +64,7 @@ export default function ImportarPage() {
       try {
         if (targetDb) await switchDatabase(targetDb);
         const text = await file.text();
+        setSqlText(text);
         const rep = await importSqlScript(text);
         setReport(rep);
         setPhase("done");
@@ -73,6 +76,28 @@ export default function ImportarPage() {
       }
     },
     [targetDb, switchDatabase, importSqlScript]
+  );
+
+  const applySqlFixes = useCallback(
+    async (selectedIndexes: number[]) => {
+      if (!report) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const rep = await importSqlWithCorrections(
+          sqlText,
+          report.suggestions ?? [],
+          selectedIndexes
+        );
+        setReport(rep);
+        setPhase("done");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [report, sqlText, importSqlWithCorrections]
   );
 
   const handleCsvFile = useCallback(
@@ -234,9 +259,17 @@ export default function ImportarPage() {
             report={report}
             onImportAnother={() => {
               setReport(null);
+              setSqlText("");
               setPhase("idle");
             }}
           />
+          {report.errors.length > 0 && (
+            <FixSuggestionsCard
+              suggestions={report.suggestions ?? []}
+              busy={busy}
+              onApply={applySqlFixes}
+            />
+          )}
           <ImportResultTabs report={report} />
         </>
       )}
