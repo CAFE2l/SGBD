@@ -1,6 +1,5 @@
 "use client";
 import { useMemo, useState } from "react";
-import Link from "next/link";
 import { ENGINES, ENGINE_IDS, type EngineId } from "@/lib/profile/engines";
 
 export function EnginePicker({ defaultName = "", onCancel, onConfirm, busy = false }: {

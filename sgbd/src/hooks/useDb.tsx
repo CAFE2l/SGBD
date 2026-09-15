@@ -11,7 +11,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  initDatabase,
   importCsv,
   importSql,
   runScript,

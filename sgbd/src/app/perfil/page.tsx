@@ -1,9 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
 import { RequireAuth } from "@/components/RequireAuth";
-import { EngineBadge, consoleUrl, tablesUrl } from "@/components/EngineBadge";
 import { EnginePicker } from "@/components/EnginePicker";
 import { useAuth } from "@/hooks/useAuth";
 import { useDb } from "@/hooks/useDb";
@@ -11,23 +9,9 @@ import { ENGINES, engineOrDefault, type EngineId } from "@/lib/profile/engines";
 import { buildJsonSql } from "@/lib/profile/json-import";
 import { describeDatabase, duplicateDatabase, exportDatabaseSql, getDatabaseEngine, getProfileStats, inspectDatabase, renameDatabase, switchActiveDatabase, dropDatabase, importSql as importSqlInto } from "@/lib/sqlite/db";
 import { appendIoHistory, getFavorites, getGlobalQueryLog, getIoHistory, toggleFavorite, type FavoriteEntry, type GlobalQueryEntry, type IoHistoryEntry } from "@/lib/sqlite/history";
+import { DbCards, IoSection, QueryHistory, Stat, TablesByDb } from "./sections";
+import { download, type DbCard } from "./types";
 
-function fmtDate(ts: number | null | undefined): string {
-  if (ts == null) return "—";
-  return new Date(ts).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-function fmtTime(ts: number): string {
-  return new Date(ts).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-function download(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-interface DbCard { name: string; engine: EngineId; tableCount: number; rowCount: number; tables: { name: string; rows: number }[]; createdAt: number | null; updatedAt: number | null; }
 export default function PerfilPage() {
   return (<RequireAuth><PageShell><PerfilInner /></PageShell></RequireAuth>);
 }
@@ -207,39 +191,28 @@ function PerfilInner() {
       </section>
       {pageError && <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{pageError}</div>}
       {pageOk && <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{pageOk}</div>}
-      <PerfilDbs
+      <DbCards
         cards={cards} loading={loadingCards} activeDatabase={activeDatabase}
-        busyDb={busyDb} renaming={renaming} renameValue={renameValue}
+        renaming={renaming} renameValue={renameValue}
         setRenameValue={setRenameValue} setRenaming={setRenaming}
         confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete}
         expandedDb={expandedDb} setExpandedDb={setExpandedDb}
         onOpenPicker={() => setShowPicker(true)}
-        onRename={(n) => void doRename(n)} onDuplicate={(n) => void doDuplicate(n)}
-        onExport={(n) => void doExport(n)} onDelete={(n) => void doDelete(n)} />
-      <PerfilHistory
-        log={log} databases={databases} favs={favs}
+        onRename={(n: string) => void doRename(n)} onDuplicate={(n: string) => void doDuplicate(n)}
+        onExport={(n: string) => void doExport(n)} onDelete={(n: string) => void doDelete(n)} />
+      <QueryHistory
+        databases={databases} favs={favs}
         qText={qText} setQText={setQText} qDb={qDb} setQDb={setQDb}
         qStatus={qStatus} setQStatus={setQStatus}
         showFavOnly={showFavOnly} setShowFavOnly={setShowFavOnly}
         visibleLog={visibleLog} favKeys={favKeys} norm={norm}
-        onToggleFav={(d, q, c) => void doToggleFav(d, q, c)} />
-      <PerfilTables cards={cards} />
-      <PerfilIo
+        onToggleFav={(d: string, q: string, c: string) => void doToggleFav(d, q, c)} />
+      <TablesByDb cards={cards} />
+      <IoSection
         cards={cards} busyDb={busyDb} jsonMsg={jsonMsg} ioHist={ioHist}
-        fileRef={fileRef} onJsonFile={(f) => void onJsonFile(f)}
-        onExportJson={(n) => void doExportJson(n)} />
+        fileRef={fileRef} onJsonFile={(f: File) => void onJsonFile(f)}
+        onExportJson={(n: string) => void doExportJson(n)} />
       {showPicker && <EnginePicker busy={creating} onCancel={() => setShowPicker(false)} onConfirm={(n, e) => void doCreate(n, e)} />}
     </div>
   );
-}
-
-function Stat({ label, value, title }: { label: string; value: number; title?: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-2 text-center" title={title}>
-      <p className="text-xl font-bold text-white">{value}</p>
-      <p className="text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
-    </div>
-  );
-}
-
 }

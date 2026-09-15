@@ -552,7 +552,7 @@ function readIdentAt(
   sql: string,
   start: number
 ): { name: string; next: number } | null {
-  let i = skipTrivia(sql, start);
+  const i = skipTrivia(sql, start);
   if (i >= sql.length) return null;
   const ch = sql[i];
   if (ch === '"' || ch === "`") {
@@ -616,7 +616,7 @@ function scanCreateTable(sql: string, created: CreatedNames): void {
     const ident = readIdentAt(sql, m.index + m[0].length);
     if (!ident) continue;
     created.tables.push(ident.name);
-    let i = skipTrivia(sql, ident.next);
+    const i = skipTrivia(sql, ident.next);
     if (sql[i] === "(") {
       const body = readBalanced(sql, i);
       if (body) extractColumnsFromCreateBody(body.body, created.columns);
@@ -675,7 +675,7 @@ function scanInsertColumns(sql: string, created: CreatedNames): void {
   while ((m = re.exec(sql))) {
     const table = readIdentAt(sql, m.index + m[0].length);
     if (!table) continue;
-    let i = skipTrivia(sql, table.next);
+    const i = skipTrivia(sql, table.next);
     if (sql[i] !== "(") continue;
     const body = readBalanced(sql, i);
     if (!body) continue;
