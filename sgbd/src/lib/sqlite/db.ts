@@ -11,6 +11,7 @@ import {
   listTables as listTablesWithEngine,
   recordDatabaseActivity,
   getActiveDatabase,
+  listDatabases,
 } from "@/lib/database-manager";
 import type {
   TableInfo,
@@ -21,6 +22,13 @@ import type {
   ImportReport,
 } from "./types";
 import type { SQLNamespace } from "@codemirror/lang-sql";
+import { getHistory } from "./history";
+import {
+  emptyCatalog,
+  extractCreatedNames,
+  mergeCreated,
+  type CompletionCatalog,
+} from "./completions";
 
 /**
  * Facade sobre o database-manager, preservando a API usada pelas páginas
@@ -109,6 +117,76 @@ export async function getSchemaCompletions(
   }
 
   return schema;
+}
+
+const MAX_DISTINCT_PER_COLUMN = 12;
+const MAX_ITEM_VALUE_LEN = 80;
+
+/**
+ * Catálogo usado pelo autocomplete: tabelas, colunas, itens distintos,
+ * bancos e nomes recém-criados (histórico) para ranquear sugestões.
+ */
+export async function getCompletionCatalog(
+  dbName: string
+): Promise<CompletionCatalog> {
+  const databases = listDatabases();
+  const catalog: CompletionCatalog = {
+    ...emptyCatalog(),
+    databases,
+  };
+
+  try {
+    const history = await getHistory(dbName);
+    catalog.created = mergeCreated(
+      history.slice(0, 80).map((entry) => extractCreatedNames(entry.query))
+    );
+  } catch {
+    // histórico é opcional para o autocomplete
+  }
+
+  if (getActiveDatabase() !== dbName) {
+    return catalog;
+  }
+
+  const engine = await ensureActiveEngine();
+  const tables = await listTables(engine);
+  catalog.tables = tables.map((t) => t.name);
+
+  for (const table of tables) {
+    const tableSchema = await getTableSchema(table.name, engine);
+    for (const column of tableSchema.columns) {
+      catalog.columns.push({
+        name: column.name,
+        table: table.name,
+        type: column.type || "TEXT",
+      });
+      const type = (column.type || "").toUpperCase();
+      if (type.includes("BLOB")) continue;
+      try {
+        const quotedTable = `"${table.name.replace(/"/g, '""')}"`;
+        const quotedCol = `"${column.name.replace(/"/g, '""')}"`;
+        const res = engine.exec(
+          `SELECT DISTINCT ${quotedCol} FROM ${quotedTable} WHERE ${quotedCol} IS NOT NULL LIMIT ${MAX_DISTINCT_PER_COLUMN}`
+        );
+        const values = res[0]?.values ?? [];
+        for (const row of values) {
+          const raw = row[0];
+          if (raw == null) continue;
+          const value = String(raw);
+          if (!value || value.length > MAX_ITEM_VALUE_LEN) continue;
+          catalog.items.push({
+            value,
+            table: table.name,
+            column: column.name,
+          });
+        }
+      } catch {
+        // coluna não consultável (expressão gerada, etc.)
+      }
+    }
+  }
+
+  return catalog;
 }
 
 export async function tableRowCount(

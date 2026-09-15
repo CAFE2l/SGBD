@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
-import { sql, type SQLNamespace } from "@codemirror/lang-sql";
+import { sql, SQLite } from "@codemirror/lang-sql";
 import {
   acceptCompletion,
   autocompletion,
@@ -14,13 +14,20 @@ import {
   startCompletion,
 } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
+import {
+  emptyCatalog,
+  sqlCompletionSource,
+  type CompletionCatalog,
+  type SqlAcceptMode,
+} from "@/lib/sqlite/completions";
 
 interface SqlEditorProps {
   value: string;
   onChange: (value: string) => void;
   onRun?: () => void;
   placeholderText?: string;
-  schema?: SQLNamespace;
+  catalog?: CompletionCatalog;
+  acceptMode?: SqlAcceptMode;
 }
 
 const baseTheme = EditorView.theme({
@@ -31,24 +38,70 @@ const baseTheme = EditorView.theme({
   },
   ".cm-content": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" },
   ".cm-gutters": { backgroundColor: "transparent", border: "none" },
+  ".cm-tooltip-autocomplete": {
+    border: "1px solid rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(15, 23, 42, 0.96)",
+    borderRadius: "0.6rem",
+    overflow: "hidden",
+  },
+  ".cm-tooltip-autocomplete > ul": {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "12px",
+  },
+  ".cm-tooltip-autocomplete ul li[aria-selected]": {
+    backgroundColor: "rgba(56, 189, 248, 0.18)",
+  },
+  ".cm-completionLabel": { color: "#e2e8f0" },
+  ".cm-completionDetail": { color: "#64748b", fontStyle: "normal" },
+  ".cm-completionMatchedText": {
+    textDecoration: "none",
+    fontWeight: 700,
+    color: "#7dd3fc",
+  },
+  ".cm-completionIcon": { opacity: 0.8 },
 });
+
+function acceptIfOpen(view: EditorView): boolean {
+  return completionStatus(view.state) === "active"
+    ? acceptCompletion(view)
+    : false;
+}
+
+function modeKeymap(mode: SqlAcceptMode) {
+  const bindings = [
+    { key: "Ctrl-Space", run: startCompletion },
+    { mac: "Alt-`", run: startCompletion },
+    { mac: "Alt-i", run: startCompletion },
+    { key: "Escape", run: closeCompletion },
+    { key: "ArrowDown", run: moveCompletionSelection(true) },
+    { key: "ArrowUp", run: moveCompletionSelection(false) },
+    { key: "PageDown", run: moveCompletionSelection(true, "page") },
+    { key: "PageUp", run: moveCompletionSelection(false, "page") },
+    { key: "Enter", run: acceptIfOpen },
+  ];
+  if (mode === "tab") {
+    bindings.push({ key: "Tab", run: acceptIfOpen });
+  }
+  return keymap.of(bindings);
+}
 
 export function SqlEditor({
   value,
   onChange,
   onRun,
   placeholderText,
-  schema = {},
+  catalog = emptyCatalog(),
+  acceptMode = "tab",
 }: SqlEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onRunRef = useRef(onRun);
-  const schemaRef = useRef(schema);
-  const schemaCompartment = useRef(new Compartment());
+  const catalogRef = useRef(catalog);
+  const modeCompartment = useRef(new Compartment());
   onChangeRef.current = onChange;
   onRunRef.current = onRun;
-  schemaRef.current = schema;
+  catalogRef.current = catalog;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -72,33 +125,19 @@ export function SqlEditor({
           },
         ])
       ),
-      autocompletion({ defaultKeymap: false }),
-      Prec.high(
-        keymap.of([
-          { key: "Ctrl-Space", run: startCompletion },
-          { mac: "Alt-`", run: startCompletion },
-          { mac: "Alt-i", run: startCompletion },
-          { key: "Escape", run: closeCompletion },
-          {
-            key: "Tab",
-            run: (view) =>
-              completionStatus(view.state) === "active" ? acceptCompletion(view) : false,
-          },
-          {
-            key: "Enter",
-            run: (view) => {
-              if (completionStatus(view.state) === "active") closeCompletion(view);
-              return false;
-            },
-          },
-          { key: "ArrowDown", run: moveCompletionSelection(true) },
-          { key: "ArrowUp", run: moveCompletionSelection(false) },
-          { key: "PageDown", run: moveCompletionSelection(true, "page") },
-          { key: "PageUp", run: moveCompletionSelection(false, "page") },
-        ])
-      ),
+      autocompletion({
+        defaultKeymap: false,
+        activateOnTyping: true,
+        interactionDelay: 0,
+        maxRenderedOptions: 50,
+        override: [sqlCompletionSource(() => catalogRef.current)],
+        optionClass: (completion) =>
+          (completion.boost ?? 0) >= 50 ? "cm-completion-priority" : "",
+        activateOnCompletion: (completion) => completion.type === "keyword",
+      }),
+      Prec.high(modeCompartment.current.of(modeKeymap(acceptMode))),
       basicSetup,
-      schemaCompartment.current.of(sql({ schema: schemaRef.current })),
+      sql({ dialect: SQLite, upperCaseKeywords: true }),
       oneDark,
       baseTheme,
       EditorView.lineWrapping,
@@ -124,11 +163,9 @@ export function SqlEditor({
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: schemaCompartment.current.reconfigure(
-        sql({ schema })
-      ),
+      effects: modeCompartment.current.reconfigure(modeKeymap(acceptMode)),
     });
-  }, [schema]);
+  }, [acceptMode]);
 
   // Reconciliar alterações externas de value sem criar loop
   useEffect(() => {

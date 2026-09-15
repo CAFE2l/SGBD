@@ -8,12 +8,24 @@ import { ResultTable } from "@/components/ResultTable";
 import { TableList } from "@/components/TableList";
 import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
-import { getSchemaCompletions, getTableSchema } from "@/lib/sqlite/db";
-import type { SQLNamespace } from "@codemirror/lang-sql";
+import { getCompletionCatalog, getTableSchema } from "@/lib/sqlite/db";
+import {
+  emptyCatalog,
+  SQL_ACCEPT_MODES,
+  type CompletionCatalog,
+  type SqlAcceptMode,
+} from "@/lib/sqlite/completions";
 import type { QueryResult, QueryScriptResult, ColumnInfo } from "@/lib/sqlite/types";
 
 /** Tempo máximo de execução antes de forçar o retorno ao estado ocioso. */
 const EXEC_TIMEOUT_MS = 15000;
+const ACCEPT_MODE_KEY = "sgbd:sql-complete-mode";
+
+function readAcceptMode(): SqlAcceptMode {
+  if (typeof window === "undefined") return "tab";
+  const stored = window.localStorage.getItem(ACCEPT_MODE_KEY);
+  return stored === "enter" ? "enter" : "tab";
+}
 
 export default function ConsolePage() {
   return (
@@ -37,7 +49,9 @@ function ConsoleInner() {
   const [loadingSchema, setLoadingSchema] = useState(false);
   const [newDbName, setNewDbName] = useState("");
   const [showNewDb, setShowNewDb] = useState(false);
-  const [completionSchema, setCompletionSchema] = useState<SQLNamespace>({});
+  const [completionCatalog, setCompletionCatalog] =
+    useState<CompletionCatalog>(emptyCatalog);
+  const [acceptMode, setAcceptMode] = useState<SqlAcceptMode>("tab");
 
   // Permite abrir /console?db=nome para já deixar o banco ativo selecionado.
   // Aplica apenas uma vez para não "brigar" com trocas manuais posteriores.
@@ -54,13 +68,26 @@ function ConsoleInner() {
   }, [requestedDb, activeDatabase, switchDatabase]);
 
   useEffect(() => {
+    setAcceptMode(readAcceptMode());
+  }, []);
+
+  const chooseAcceptMode = useCallback((mode: SqlAcceptMode) => {
+    setAcceptMode(mode);
+    try {
+      window.localStorage.setItem(ACCEPT_MODE_KEY, mode);
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     if (!activeDatabase) {
-      setCompletionSchema({});
+      setCompletionCatalog(emptyCatalog());
       return;
     }
-    getSchemaCompletions(activeDatabase).then((schema) => {
-      if (!cancelled) setCompletionSchema(schema);
+    getCompletionCatalog(activeDatabase).then((catalog) => {
+      if (!cancelled) setCompletionCatalog(catalog);
     });
     return () => {
       cancelled = true;
@@ -222,24 +249,61 @@ function ConsoleInner() {
         {/* Editor + resultados */}
         <div className="min-w-0 flex-1">
           <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-            <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-2">
               <span className="text-xs font-semibold text-slate-400">Console SQL</span>
-              <button
-                onClick={() => run()}
-                disabled={running || !sql.trim()}
-                className="rounded-lg bg-sky-400 px-4 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
-              >
-                {running ? "Executando…" : "Executar (Ctrl+Enter)"}
-              </button>
+              <div className="flex items-center gap-2">
+                <div
+                  className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/20 p-0.5"
+                  title="Como aceitar a sugestão do autocomplete"
+                >
+                  <span className="px-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Autocomplete
+                  </span>
+                  {SQL_ACCEPT_MODES.map((mode) => {
+                    const active = acceptMode === mode.id;
+                    return (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => chooseAcceptMode(mode.id)}
+                        aria-pressed={active}
+                        title={mode.hint}
+                        className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+                          active
+                            ? "bg-sky-400/20 text-sky-300"
+                            : "text-slate-400 hover:bg-white/5 hover:text-white"
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={() => run()}
+                  disabled={running || !sql.trim()}
+                  className="rounded-lg bg-sky-400 px-4 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
+                >
+                  {running ? "Executando…" : "Executar (Ctrl+Enter)"}
+                </button>
+              </div>
             </div>
             <div className="p-3">
               <SqlEditor
                 value={sql}
                 onChange={setSql}
                 onRun={() => run()}
-                schema={completionSchema}
+                catalog={completionCatalog}
+                acceptMode={acceptMode}
                 placeholderText={"CREATE DATABASE Ecommerce;\nUSE Ecommerce;\nCREATE TABLE ...;\nINSERT INTO ...;"}
               />
+              <p className="mt-2 text-[11px] text-slate-500">
+                {acceptMode === "tab"
+                  ? "Modo Tab: Tab ou Enter aceita a sugestão."
+                  : "Modo Enter: só Enter aceita a sugestão."}{" "}
+                Ctrl+Space abre o autocomplete. Tabelas, colunas e itens que
+                você criar aparecem primeiro.
+              </p>
             </div>
           </div>
 

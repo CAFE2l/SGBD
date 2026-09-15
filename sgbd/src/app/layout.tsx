@@ -23,6 +23,7 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <body
+        suppressHydrationWarning
         className={`${inter.variable} min-h-screen bg-[#0a0e1a] text-foreground antialiased`}
       >
         <AuthProvider>

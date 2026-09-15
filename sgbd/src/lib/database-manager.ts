@@ -12,7 +12,12 @@ import {
   migrateLegacyDatabase,
   type DatabaseRegistry,
 } from "./sqlite/persist";
-import { appendHistory, clearHistory } from "./sqlite/history";
+import {
+  appendHistory,
+  clearHistory,
+  appendGlobalQueryLog,
+} from "./sqlite/history";
+import { engineOrDefault, type EngineId } from "./profile/engines";
 import type {
   TableInfo,
   QueryResult,
@@ -24,14 +29,25 @@ const DEFAULT_DB_NAME = "meu_banco";
 let SQL: SqlJsStatic | null = null;
 let initPromise: Promise<SqlJsStatic> | null = null;
 
-/** Metadados de um banco (datas de criação/modificação). */
+/** Metadados de um banco (datas de criação/modificação + motor). */
 export interface DbMeta {
   createdAt: number;
   updatedAt: number;
+  /**
+   * Motor escolhido na criação (ver `src/lib/profile/engines.ts`).
+   * DECISÃO: simulado/traduzido sobre o mesmo sql.js — ver header de engines.ts.
+   */
+  engine?: EngineId;
 }
 
 export interface ManagerRegistry extends DatabaseRegistry {
   meta?: Record<string, DbMeta>;
+  /** Contadores rápidos derivados (persistidos para leitura instantânea). */
+  stats?: {
+    totalQueries: number;
+    totalTablesCreated: number;
+    totalDatabasesCreated: number;
+  };
 }
 
 /** Registro em memória; espelho do que está persistido. */
@@ -105,6 +121,119 @@ export function initManager(): Promise<void> {
   return managerInitPromise;
 }
 
+/**
+ * Normaliza dialetos MySQL/Postgres para o subconjunto executável no sql.js.
+ * DECISÃO (ver engines.ts): tradução best-effort, não fidelidade total.
+ * - backticks → aspas duplas; AUTO_INCREMENT → AUTOINCREMENT;
+ * - SERIAL/BIGSERIAL → INTEGER PRIMARY KEY AUTOINCREMENT;
+ * - ENUM(...) → TEXT (check de valores é ignorado nesta fase educacional).
+ */
+export function normalizeDialect(sql: string, engine?: EngineId): string {
+  let out = sql;
+  out = out.replace(/`([^`]+)`/g, '"$1"');
+  out = out.replace(/\bAUTO_INCREMENT\b/gi, "AUTOINCREMENT");
+  out = out.replace(/\bBIGSERIAL\b/gi, "INTEGER PRIMARY KEY AUTOINCREMENT");
+  out = out.replace(/(?<!PRIMARY KEY\s)\bSERIAL\b/gi, "INTEGER");
+  out = out.replace(/\bENUM\s*\([^)]*\)/gi, "TEXT");
+  // Postgres: "IF NOT EXISTS" já é aceito pelo SQLite — nada a fazer.
+  void engine;
+  return out;
+}
+
+/**
+ * Traduz sintaxe de documento Mongo (find/insertOne/aggregate) para SQL.
+ * Retorna o SQL traduzido, ou null se não for sintaxe Mongo.
+ */
+export function translateMongoToSql(stmt: string): string | null {
+  const t = stmt.trim();
+  // db.colecao.find({ campo: valor, ... })  /  db.colecao.find()
+  let m = t.match(
+    /^db\.([A-Za-z0-9_]+)\.find\s*\(\s*(\{[\s\S]*\})?\s*\)\s*;?\s*$/i
+  );
+  if (m) {
+    const col = m[1];
+    const filterRaw = (m[2] ?? "").trim();
+    if (!filterRaw) return `SELECT * FROM "${col}" LIMIT 100;`;
+    try {
+      // Converte objeto JS-ish em JSON válido: chaves sem aspas → com aspas.
+      const jsonish = filterRaw
+        .replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":')
+        .replace(/'/g, '"');
+      const filter = JSON.parse(jsonish) as Record<string, unknown>;
+      const keys = Object.keys(filter);
+      if (keys.length === 0) return `SELECT * FROM "${col}" LIMIT 100;`;
+      const where = keys
+        .map((k) => {
+          const v = filter[k];
+          if (v === null) return `"${k}" IS NULL`;
+          if (typeof v === "number") return `"${k}" = ${v}`;
+          return `"${k}" = '${String(v).replace(/'/g, "''")}'`;
+        })
+        .join(" AND ");
+      return `SELECT * FROM "${col}" WHERE ${where} LIMIT 100;`;
+    } catch {
+      return `SELECT * FROM "${col}" LIMIT 100;`;
+    }
+  }
+  // db.colecao.insertOne({ ... })
+  m = t.match(/^db\.([A-Za-z0-9_]+)\.insertOne\s*\(\s*(\{[\s\S]*\})\s*\)\s*;?\s*$/i);
+  if (m) {
+    const col = m[1];
+    try {
+      const jsonish = m[2]
+        .replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":')
+        .replace(/'/g, '"');
+      const doc = JSON.parse(jsonish) as Record<string, unknown>;
+      const cols = Object.keys(doc);
+      if (cols.length === 0) throw new Error("empty");
+      const colList = cols.map((c) => `"${c}"`).join(", ");
+      const valList = cols
+        .map((c) => {
+          const v = doc[c];
+          if (v === null || v === undefined) return "NULL";
+          if (typeof v === "number") return String(v);
+          if (typeof v === "object") return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
+          return `'${String(v).replace(/'/g, "''")}'`;
+        })
+        .join(", ");
+      return `INSERT INTO "${col}" (${colList}) VALUES (${valList});`;
+    } catch {
+      return null;
+    }
+  }
+  // db.colecao.aggregate([...]) → aproxima com SELECT * (fase educacional)
+  m = t.match(/^db\.([A-Za-z0-9_]+)\.aggregate\s*\(/i);
+  if (m) {
+    return `SELECT * FROM "${m[1]}" LIMIT 100;`;
+  }
+  return null;
+}
+
+/** Retorna o motor do banco informado (default: postgres). */
+export function getDatabaseEngine(name: string): EngineId {
+  return engineOrDefault(registry.meta?.[name]?.engine);
+}
+
+/** Define/troca o motor de um banco existente. */
+export async function setDatabaseEngine(
+  name: string,
+  engine: EngineId
+): Promise<void> {
+  await initManager();
+  if (!registry.databases.includes(name)) {
+    throw new Error(`Banco "${name}" não encontrado.`);
+  }
+  if (!registry.meta) registry.meta = {};
+  const m = registry.meta[name] ?? {
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  m.engine = engine;
+  m.updatedAt = Date.now();
+  registry.meta[name] = m;
+  await persistRegistry(registry);
+}
+
 /** Lista os nomes dos bancos existentes. */
 export function listDatabases(): string[] {
   return [...registry.databases];
@@ -166,13 +295,19 @@ export async function ensureActiveEngine(): Promise<Database> {
 }
 
 /** Cria um novo banco nomeado e o torna o banco ativo. */
-export async function createDatabase(name: string): Promise<void> {
+export async function createDatabase(
+  name: string,
+  engine?: EngineId
+): Promise<void> {
   await initManager();
-  await createDatabaseRaw(name);
+  await createDatabaseRaw(name, engine);
 }
 
 /** Cria um banco sem passar por initManager (evita recursão). */
-async function createDatabaseRaw(name: string): Promise<void> {
+async function createDatabaseRaw(
+  name: string,
+  engine?: EngineId
+): Promise<void> {
   const clean = sanitizeName(name);
   if (!clean) throw new Error("Nome de banco inválido.");
   if (registry.databases.includes(clean)) {
@@ -188,7 +323,19 @@ async function createDatabaseRaw(name: string): Promise<void> {
   registry.activeDatabase = clean;
   const now = Date.now();
   if (!registry.meta) registry.meta = {};
-  registry.meta[clean] = { createdAt: now, updatedAt: now };
+  registry.meta[clean] = {
+    createdAt: now,
+    updatedAt: now,
+    engine: engineOrDefault(engine ?? "postgres"),
+  };
+  if (!registry.stats) {
+    registry.stats = {
+      totalQueries: 0,
+      totalTablesCreated: 0,
+      totalDatabasesCreated: 0,
+    };
+  }
+  registry.stats.totalDatabasesCreated += 1;
   await persistRegistry(registry);
   void persistDatabaseBytes(clean, db.export());
 }

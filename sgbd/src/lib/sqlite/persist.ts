@@ -1,4 +1,5 @@
 import { openDB, type IDBPDatabase } from "idb";
+import { scopedKey } from "../profile/user-scope";
 
 const DB_NAME = "sgbd-web";
 const STORE = "sqlite";
@@ -37,7 +38,40 @@ function getDB(): Promise<IDBPDatabase> {
 
 /** Converte um nome de banco para a chave de armazenamento. */
 function nameToKey(name: string): string {
-  return `${NAME_PREFIX}${name}`;
+  return scopedKey(`${NAME_PREFIX}${name}`);
+}
+
+function regKey(): string {
+  return scopedKey(REGISTRY_KEY);
+}
+
+function legacyKeyRaw(): string {
+  return LEGACY_KEY;
+}
+
+/** Lê o registro do escopo atual; se vazio, tenta migrar do legado/global. */
+async function getWithFallback<T>(scoped: string, fallbacks: string[]): Promise<T | null> {
+  try {
+    const db = await getDB();
+    const direct = (await db.get(STORE, scoped)) as T | undefined;
+    if (direct !== undefined) return direct;
+    for (const f of fallbacks) {
+      if (f === scoped) continue;
+      const v = (await db.get(STORE, f)) as T | undefined;
+      if (v !== undefined) {
+        // promove para o escopo atual (merge lazy)
+        try {
+          await db.put(STORE, v, scoped);
+        } catch {
+          // best-effort
+        }
+        return v;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
