@@ -187,13 +187,35 @@ export function DbProvider({ children }: { children: ReactNode }) {
       suggestions: SqlSuggestion[],
       selectedIndexes: number[]
     ) => {
-      const report = await importSqlWithCorrections(
-        sql,
-        suggestions,
-        selectedIndexes
-      );
-      await refresh();
-      return report;
+      console.log("[useDb] importSqlWithCorrections chamada", {
+        selecionados: selectedIndexes.length,
+        sugestoes: suggestions.length,
+      });
+      try {
+        const report = await importSqlWithCorrections(
+          sql,
+          suggestions,
+          selectedIndexes
+        );
+        console.log("[useDb] importSqlWithCorrections retornou", {
+          errors: report.errors.length,
+          log: report.log.length,
+          tabelas: report.tableCount,
+        });
+        console.log("[useDb] Atualizando estado do banco (refresh)…");
+        await refresh();
+        console.log("[useDb] Estado atualizado.");
+        return report;
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        console.error(
+          "[useDb] importSqlWithCorrections falhou",
+          error,
+          error?.message,
+          error?.stack
+        );
+        throw error;
+      }
     },
     [refresh]
   );

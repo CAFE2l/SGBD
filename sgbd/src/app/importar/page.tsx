@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
@@ -14,6 +14,11 @@ import { getTableData, getActiveDatabase } from "@/lib/sqlite/db";
 import type { ImportReport, QueryResult } from "@/lib/sqlite/types";
 
 type ColumnType = "INTEGER" | "REAL" | "TEXT";
+
+type FixToast = { type: "ok" | "err"; text: string } | null;
+
+/** Tempo máximo (ms) para a reimportação com correções responder. */
+const APPLY_TIMEOUT_MS = 15_000;
 
 interface CsvState {
   fileName: string;
@@ -78,26 +83,101 @@ export default function ImportarPage() {
     [targetDb, switchDatabase, importSqlScript]
   );
 
+  const busyRef = useRef(false);
+  const [toast, setToast] = useState<FixToast>(null);
+  const toastTimer = useRef<number | null>(null);
+  /** Token para ignorar resoluções "fantasma" de uma tentativa já anulada (ex: timeout). */
+  const applyToken = useRef(0);
+
+  const showToast = useCallback((type: "ok" | "err", text: string) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast({ type, text });
+    toastTimer.current = window.setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
+  }, []);
+
   const applySqlFixes = useCallback(
     async (selectedIndexes: number[]) => {
-      if (!report) return;
+      if (!report || busyRef.current) return;
+      busyRef.current = true;
       setBusy(true);
       setError(null);
+      const runId = ++applyToken.current;
+      console.log("[fixes] Iniciando aplicação de correções", {
+        selected: selectedIndexes,
+        totalSugestoes: report.suggestions?.length ?? 0,
+      });
+      let timer: number | null = null;
       try {
-        const rep = await importSqlWithCorrections(
-          sqlText,
-          report.suggestions ?? [],
-          selectedIndexes
-        );
+        // Timeout de segurança: nunca deixar o botão girando para sempre.
+        const timeout = new Promise<never>((_, reject) => {
+          timer = window.setTimeout(() => {
+            reject(new Error("timeout"));
+          }, APPLY_TIMEOUT_MS);
+        });
+
+        const apply = (async () => {
+          console.log("[fixes] Gerando SQL corrigido e chamando a reimportação…");
+          const rep = await importSqlWithCorrections(
+            sqlText,
+            report.suggestions ?? [],
+            selectedIndexes
+          );
+          console.log("[fixes] Resposta da reimportação recebida", {
+            errors: rep.errors.length,
+            log: rep.log.length,
+            tabelas: rep.tableCount,
+          });
+          console.log("[fixes] Interpretando a resposta (parsing)…");
+          return rep;
+        })();
+
+        const rep = await Promise.race([apply, timeout]);
+        if (timer) window.clearTimeout(timer);
+        if (applyToken.current !== runId) return; // tentativa substituída
+
         setReport(rep);
         setPhase("done");
+        if (rep.errors.length === 0) {
+          console.log("[fixes] Correções aplicadas com sucesso.");
+          showToast("ok", "Correções aplicadas e importação concluída com sucesso.");
+        } else {
+          console.log("[fixes] Correções aplicadas, mas com erros pendentes.",
+            rep.errors);
+          showToast("err", "Correções aplicadas, mas alguns comandos ainda falharam — veja o log.");
+        }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        const error = e instanceof Error ? e : new Error(String(e));
+        console.error(
+          "[fixes] Falha ao aplicar correções",
+          error,
+          error?.message,
+          error?.stack
+        );
+        const timedOut = error.message === "timeout";
+        if (timedOut) {
+          console.error(
+            `[fixes] Operação excedeu ${APPLY_TIMEOUT_MS}ms e foi cancelada (loading rearmado).`
+          );
+        }
+        if (applyToken.current !== runId) return;
+        const message = timedOut
+          ? "Não foi possível aplicar as correções — tente novamente ou ajuste manualmente."
+          : error.message;
+        setError(message);
+        showToast("err", message);
       } finally {
+        if (timer) window.clearTimeout(timer);
+        busyRef.current = false;
         setBusy(false);
       }
     },
-    [report, sqlText, importSqlWithCorrections]
+    [report, sqlText, importSqlWithCorrections, showToast]
   );
 
   const handleCsvFile = useCallback(
@@ -185,6 +265,28 @@ export default function ImportarPage() {
       {error && (
         <div className="mt-4 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
           {error}
+        </div>
+      )}
+
+      {toast && (
+        <div
+          className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold shadow-2xl ${
+            toast.type === "ok"
+              ? "border-emerald-400/30 bg-slate-900 text-emerald-300"
+              : "border-rose-400/30 bg-slate-900 text-rose-300"
+          }`}
+          role="status"
+        >
+          <span
+            className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${
+              toast.type === "ok"
+                ? "bg-emerald-400/15 text-emerald-300"
+                : "bg-rose-400/15 text-rose-300"
+            }`}
+          >
+            {toast.type === "ok" ? "✓" : "!"}
+          </span>
+          {toast.text}
         </div>
       )}
 

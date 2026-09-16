@@ -4,7 +4,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  updateProfile,
+  updateProfile as firebaseUpdateProfile,
   signOut as firebaseSignOut,
   onAuthStateChanged,
   type Auth,
@@ -74,9 +74,22 @@ export async function signUpWithEmail(
     password
   );
   if (name.trim()) {
-    await updateProfile(cred.user, { displayName: name.trim() });
+    await firebaseUpdateProfile(cred.user, { displayName: name.trim() });
   }
   return cred.user;
+}
+
+/** Atualiza foto/display name do perfil e retorna o usuário recarregado. */
+export async function updateUserProfile(patch: {
+  displayName?: string;
+  photoURL?: string | null;
+}): Promise<User> {
+  const auth = requireAuth();
+  const current = auth.currentUser;
+  if (!current) throw new Error("Nenhum usuário autenticado.");
+  await firebaseUpdateProfile(current, patch);
+  await current.reload();
+  return auth.currentUser ?? current;
 }
 
 /** Encerra a sessão atual. */

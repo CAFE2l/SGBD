@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { DbProvider } from "@/hooks/useDb";
+import { TableSelectionProvider } from "@/hooks/useActiveTable";
 import { AuthProvider } from "@/hooks/useAuth";
 import "@xyflow/react/dist/style.css";
 import "./globals.css";
@@ -28,7 +29,9 @@ export default function RootLayout({
         className={`${inter.variable} min-h-screen bg-[#0a0e1a] text-foreground antialiased`}
       >
         <AuthProvider>
-          <DbProvider>{children}</DbProvider>
+          <DbProvider>
+            <TableSelectionProvider>{children}</TableSelectionProvider>
+          </DbProvider>
         </AuthProvider>
       </body>
     </html>

@@ -245,7 +245,8 @@ export async function getTableSchema(
   return { name: table, sql: t?.sql ?? null, columns };
 }
 
-/** Busca dados de uma tabela com limite. */
+/** Busca dados de uma tabela com limite. Colunas de tipo booleano (BOOLEAN/BOOL,
+ *  ex: vindas de `bit(1)` corrigido) são expostas como true/false reais. */
 export async function getTableData(
   table: string,
   limit = 1000,
@@ -256,7 +257,36 @@ export async function getTableData(
   if (res.length === 0) {
     return { columns: [], rows: [], isSelect: true, message: "Tabela vazia." };
   }
-  return resultToObject(res[0].columns, res[0].values, "");
+  const booleanCols = booleanColumnsOf(useDb, table);
+  const result = resultToObject(res[0].columns, res[0].values, "");
+  if (booleanCols.size > 0) {
+    result.rows = result.rows.map((row) => {
+      const obj: Record<string, unknown> = { ...row };
+      for (const col of booleanCols) {
+        const v = obj[col];
+        if (v === 0 || v === 1) obj[col] = Boolean(v);
+      }
+      return obj;
+    });
+  }
+  return result;
+}
+
+/** Nomes das colunas declaradas BOOLEAN/BOOL (em maiúsculas). */
+function booleanColumnsOf(engine: Database, table: string): Set<string> {
+  const cols = new Set<string>();
+  try {
+    const pr = engine.prepare(`PRAGMA table_info("${table}")`);
+    while (pr.step()) {
+      const r = pr.getAsObject();
+      const type = r.type ? String(r.type).toUpperCase() : "";
+      if (type === "BOOLEAN" || type === "BOOL") cols.add(String(r.name));
+    }
+    pr.free();
+  } catch {
+    // vista/expressão ilegível — segue sem conversão
+  }
+  return cols;
 }
 
 /** Tipo com a definição de uma chave estrangeira de uma tabela. */
@@ -570,10 +600,160 @@ export async function dropForeignKey(
   ) {
     throw new Error("Não foi possível remover a constraint do schema real.");
   }
-  save();
+    save();
   const stmt = `ALTER TABLE ${quoteIdent(table)} DROP CONSTRAINT ${quoteIdent(
     `fk_${table}_${column}`
   )};`;
+  recordDatabaseActivity(getActiveDatabase(), "ALTER", stmt);
+}
+
+/**
+ * Define uma coluna como chave primária no schema real do banco
+ * (ALTER TABLE … ADD CONSTRAINT … PRIMARY KEY). O SQLite não suporta
+ * essa sintaxe, então a tabela é recriada via rebuildTable.
+ *
+ * Validações antes de aplicar:
+ * - A coluna deve existir;
+ * - Não pode já ser PK;
+ * - Não pode ter valores duplicados (exceto NULL).
+ */
+export async function addPrimaryKey(
+  table: string,
+  column: string
+): Promise<void> {
+  if (!table || !column) {
+    throw new Error("Tabela/coluna inválida para a constraint PRIMARY KEY.");
+  }
+  const engine = await ensureActiveEngine();
+  const schema = await getTableSchema(table, engine);
+  const col = schema.columns.find((c) => c.name === column);
+  if (!col) {
+    throw new Error(`Coluna "${column}" não encontrada na tabela "${table}".`);
+  }
+  if (col.pk > 0) {
+    throw new Error(`A coluna "${column}" já é chave primária.`);
+  }
+
+  // Verifica duplicatas (NULLs são ignorados pelo GROUP BY)
+  const dupRes = engine.exec(
+    `SELECT 1 FROM ${quoteIdent(table)} WHERE ${quoteIdent(column)} IS NOT NULL GROUP BY ${quoteIdent(column)} HAVING COUNT(*) > 1 LIMIT 1;`
+  );
+  if (dupRes.length > 0 && dupRes[0]?.values?.length > 0) {
+    throw new Error(
+      `Não é possível definir "${column}" como chave primária: há valores duplicados. Remova os duplicatas antes de promover.`
+    );
+  }
+
+  const stmt = `ALTER TABLE ${quoteIdent(table)} ADD CONSTRAINT ${quoteIdent(
+    `pk_${table}_${column}`
+  )} PRIMARY KEY (${quoteIdent(column)});`;
+
+  try {
+    engine.exec(stmt);
+  } catch {
+    // SQLite: recria a tabela removendo PKs existentes e aplicando a nova
+    rebuildTable(engine, table, (segments) => {
+      const result: string[] = [];
+      for (const seg of segments) {
+        // Remove inline PRIMARY KEY de qualquer coluna
+        const cleaned = seg
+          .replace(/\s+PRIMARY\s+KEY\b\s*(?:ASC|DESC)?\s*/gi, " ")
+          .trim();
+        // Pula constraints table-level PRIMARY KEY existentes
+        if (
+          /^\s*(?:CONSTRAINT\s+\S+\s+)?PRIMARY\s+KEY\s*\(/i.test(cleaned)
+        ) {
+          continue;
+        }
+        if (cleaned) result.push(cleaned);
+      }
+      result.push(`PRIMARY KEY (${quoteIdent(column)})`);
+      return result;
+    });
+
+    // Verifica se a constraint foi aplicada
+    const after = await getTableSchema(table, engine);
+    const afterCol = after.columns.find((c) => c.name === column);
+    if (!afterCol || afterCol.pk === 0) {
+      throw new Error("Não foi possível aplicar a constraint PRIMARY KEY no schema real.");
+    }
+  }
+  save();
+  recordDatabaseActivity(getActiveDatabase(), "ALTER", stmt);
+}
+
+/**
+ * Remove a constraint PRIMARY KEY de uma coluna no schema real do banco
+ * (ALTER TABLE … DROP CONSTRAINT …). O SQLite não suporta DROP CONSTRAINT,
+ * então a tabela é recriada via rebuildTable removendo a PK da coluna
+ * (inline ou table-level).
+ */
+export async function dropPrimaryKey(
+  table: string,
+  column: string
+): Promise<void> {
+  if (!table || !column) {
+    throw new Error("Tabela/coluna inválida para remover PRIMARY KEY.");
+  }
+  const engine = await ensureActiveEngine();
+  const schema = await getTableSchema(table, engine);
+  const col = schema.columns.find((c) => c.name === column);
+  if (!col) {
+    throw new Error(`Coluna "${column}" não encontrada na tabela "${table}".`);
+  }
+  if (col.pk === 0) {
+    throw new Error(`A coluna "${column}" não é chave primária.`);
+  }
+
+  const stmt = `ALTER TABLE ${quoteIdent(table)} DROP CONSTRAINT ${quoteIdent(
+    `pk_${table}_${column}`
+  )};`;
+
+  try {
+    engine.exec(stmt);
+  } catch {
+    // SQLite: recria a tabela removendo a PK da coluna alvo
+    rebuildTable(engine, table, (segments) => {
+      const result: string[] = [];
+      for (const seg of segments) {
+        // Primeiro: verifica constraint table-level PRIMARY KEY
+        const pkMatch = seg.match(
+          /^\s*(?:CONSTRAINT\s+(\S+)\s+)?PRIMARY\s+KEY\s*\(([^)]*)\)/i
+        );
+        if (pkMatch) {
+          const pkCols = splitTopLevel(pkMatch[2]).map(unquoteIdent);
+          const remaining = pkCols.filter((c) => c !== column);
+          if (remaining.length === 0) {
+            continue; // remove a PK inteira
+          }
+          const rebuilt = `PRIMARY KEY (${remaining
+            .map(quoteIdent)
+            .join(", ")})`;
+          result.push(rebuilt);
+          continue;
+        }
+        // Depois: remove inline PRIMARY KEY da coluna alvo
+        const colName = firstIdent(seg);
+        if (colName === column) {
+          const cleaned = seg
+            .replace(/\s+PRIMARY\s+KEY\b\s*(?:ASC|DESC)?\s*/gi, " ")
+            .trim();
+          if (cleaned) result.push(cleaned);
+          continue;
+        }
+        result.push(seg.trim());
+      }
+      return result;
+    });
+
+    // Verifica se a PK foi removida
+    const after = await getTableSchema(table, engine);
+    const afterCol = after.columns.find((c) => c.name === column);
+    if (afterCol && afterCol.pk > 0) {
+      throw new Error("Não foi possível remover a constraint PRIMARY KEY do schema real.");
+    }
+  }
+  save();
   recordDatabaseActivity(getActiveDatabase(), "ALTER", stmt);
 }
 
@@ -843,7 +1023,7 @@ export async function importSql(sql: string): Promise<ImportReport> {
       log.push(`#${s.index} ${s.keyword}: ${s.message}`);
     } else {
       errors.push(`#${s.index} ${s.keyword}: ${s.message}`);
-      suggestions.push(suggestSqlFix(s.index, s.keyword, s.sql, s.message));
+      suggestions.push(await suggestSqlFix(s.index, s.keyword, s.sql, s.message));
     }
   }
   const engine = await ensureActiveEngine();
@@ -877,57 +1057,91 @@ export async function importSqlWithCorrections(
   const pending: SqlSuggestion[] = [];
   const selected = new Set(selectedIndexes);
 
-  for (const suggestion of suggestions) {
-    const label = `#${suggestion.index} ${suggestion.keyword}`;
-    if (!selected.has(suggestion.index)) {
+  console.log("[importSqlWithCorrections] início", {
+    comandosFalhos: suggestions.length,
+    selecionados: selected.size,
+  });
+
+  try {
+    for (const suggestion of suggestions) {
+      const label = `#${suggestion.index} ${suggestion.keyword}`;
+      if (!selected.has(suggestion.index)) {
+        console.log(`[importSqlWithCorrections] ${label}: não selecionado — mantido como pendente.`);
+        errors.push(`${label}: ${suggestion.message}`);
+        pending.push(suggestion);
+        continue;
+      }
+
+      if (suggestion.action === "remove") {
+        console.log(`[importSqlWithCorrections] ${label}: descartado (${suggestion.ruleId}).`);
+        log.push(`${label}: ignorado (sugestão: ${suggestion.reason.toLowerCase()})`);
+        continue;
+      }
+
+      if (suggestion.action === "fix" && suggestion.fixed) {
+        console.log(`[importSqlWithCorrections] Aplicando correção da linha ${suggestion.index} (${suggestion.ruleId})…`);
+        try {
+          const result = await runQuery(suggestion.fixed);
+          console.log(`[importSqlWithCorrections] ${label}: correção aplicada com sucesso → "${result.message}".`);
+          log.push(`${label}: corregido — ${result.message}`);
+          recordLearningFixed(suggestion.ruleId);
+          const kw = suggestion.keyword;
+          if (kw === "CREATE" || kw === "INSERT" || kw === "REPLACE") {
+            recordDatabaseActivity(getActiveDatabase(), kw, suggestion.fixed);
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(
+            `[importSqlWithCorrections] ${label}: correção automática falhou`,
+            e,
+            e instanceof Error ? e.message : undefined,
+            e instanceof Error ? e.stack : undefined
+          );
+          errors.push(`${label}: ${msg}`);
+          pending.push({
+            ...suggestion,
+            action: "manual",
+            reason:
+              "A correção automática também falhou; revise o comando manualmente.",
+          });
+        }
+        continue;
+      }
+
+      // action === "manual"
+      console.log(`[importSqlWithCorrections] ${label}: manual — mantido como pendente.`);
       errors.push(`${label}: ${suggestion.message}`);
       pending.push(suggestion);
-      continue;
     }
 
-    if (suggestion.action === "remove") {
-      log.push(`${label}: ignorado (sugestão: ${suggestion.reason.toLowerCase()})`);
-      continue;
-    }
-
-    if (suggestion.action === "fix" && suggestion.fixed) {
-      try {
-        const result = await runQuery(suggestion.fixed);
-        log.push(`${label}: corregido — ${result.message}`);
-        recordLearningFixed(suggestion.ruleId);
-        const kw = suggestion.keyword;
-        if (kw === "CREATE" || kw === "INSERT" || kw === "REPLACE") {
-          recordDatabaseActivity(getActiveDatabase(), kw, suggestion.fixed);
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`${label}: ${msg}`);
-        pending.push({
-          ...suggestion,
-          action: "manual",
-          reason:
-            "A correção automática também falhou; revise o comando manualmente.",
-        });
-      }
-      continue;
-    }
-
-    // action === "manual"
-    errors.push(`${label}: ${suggestion.message}`);
-    pending.push(suggestion);
+    console.log("[importSqlWithCorrections] Atualizando catálogo de tabelas pós-correção…");
+    const engine = await ensureActiveEngine();
+    const tables = await listTables(engine);
+    const rep: ImportReport = {
+      tableName: tables.map((t) => t.name).join(", "),
+      tableCount: tables.length,
+      rowCount: tables.length,
+      log,
+      errors,
+      code: sql,
+      suggestions: pending.length > 0 ? pending : undefined,
+    };
+    console.log("[importSqlWithCorrections] fim", {
+      errors: rep.errors.length,
+      pendentes: pending.length,
+      tabelas: rep.tableCount,
+    });
+    return rep;
+  } catch (e) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    console.error(
+      "[importSqlWithCorrections] falha na cadeia de correções",
+      error,
+      error?.message,
+      error?.stack
+    );
+    throw error;
   }
-
-  const engine = await ensureActiveEngine();
-  const tables = await listTables(engine);
-  return {
-    tableName: tables.map((t) => t.name).join(", "),
-    tableCount: tables.length,
-    rowCount: tables.length,
-    log,
-    errors,
-    code: sql,
-    suggestions: pending.length > 0 ? pending : undefined,
-  };
 }
 
 /** Inicializa o banco (motor + restauração do persistido). Retorna tabelas. */

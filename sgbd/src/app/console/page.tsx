@@ -6,16 +6,19 @@ import { PageShell } from "@/components/PageShell";
 import { SqlEditor } from "@/components/SqlEditor";
 import { ResultTable } from "@/components/ResultTable";
 import { TableList } from "@/components/TableList";
+import { TableDetails } from "@/components/TableDetails";
 import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
-import { getCompletionCatalog, getTableSchema } from "@/lib/sqlite/db";
+import { useActiveTable } from "@/hooks/useActiveTable";
+import { useTableCounts } from "@/hooks/useTableCounts";
+import { getCompletionCatalog } from "@/lib/sqlite/db";
 import {
   emptyCatalog,
   SQL_ACCEPT_MODES,
   type CompletionCatalog,
   type SqlAcceptMode,
 } from "@/lib/sqlite/completions";
-import type { QueryResult, QueryScriptResult, ColumnInfo } from "@/lib/sqlite/types";
+import type { QueryResult, QueryScriptResult } from "@/lib/sqlite/types";
 
 /** Tempo máximo de execução antes de forçar o retorno ao estado ocioso. */
 const EXEC_TIMEOUT_MS = 15000;
@@ -25,6 +28,11 @@ function readAcceptMode(): SqlAcceptMode {
   if (typeof window === "undefined") return "tab";
   const stored = window.localStorage.getItem(ACCEPT_MODE_KEY);
   return stored === "enter" ? "enter" : "tab";
+}
+
+interface HistoryItem {
+  query: string;
+  table: string | null;
 }
 
 export default function ConsolePage() {
@@ -38,15 +46,15 @@ export default function ConsolePage() {
 function ConsoleInner() {
   const { tables, executeScript, databases, activeDatabase, switchDatabase, createNewDatabase } =
     useDb();
+  const { activeTable, selectTable } = useActiveTable();
+  const { counts: tableCounts, loading: loadingCounts } = useTableCounts(tables);
   const searchParams = useSearchParams();
   const [sql, setSql] = useState("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [log, setLog] = useState<QueryScriptResult["log"]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<string[]>([]);
-  const [schemas, setSchemas] = useState<Record<string, ColumnInfo[]>>({});
-  const [loadingSchema, setLoadingSchema] = useState(false);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [newDbName, setNewDbName] = useState("");
   const [showNewDb, setShowNewDb] = useState(false);
   const [completionCatalog, setCompletionCatalog] =
@@ -103,7 +111,7 @@ function ConsoleInner() {
   }, [activeDatabase, tables]);
 
   const run = useCallback(
-    async (source?: string) => {
+    async (source?: string, tableContext?: string | null) => {
       const query = source ?? sql;
       if (!query.trim()) return;
       setRunning(true);
@@ -126,7 +134,10 @@ function ConsoleInner() {
         setResult(res.final);
         setLog(res.log);
         setError(res.error);
-        setHistory((h) => [query, ...h.filter((x) => x !== query)].slice(0, 20));
+        setHistory((h) => [
+          { query, table: tableContext ?? activeTable },
+          ...h.filter((x) => x.query !== query),
+        ].slice(0, 20));
       } catch (e) {
         if (!stale) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -134,7 +145,7 @@ function ConsoleInner() {
         setRunning(false);
       }
     },
-    [sql, executeScript]
+    [sql, executeScript, activeTable]
   );
 
   const createDb = useCallback(async () => {
@@ -154,25 +165,13 @@ function ConsoleInner() {
     setSql(`SELECT * FROM "${table}" LIMIT 100;`);
   }, []);
 
-  const toggleSchema = useCallback(
-    async (table: string) => {
-      if (schemas[table]) {
-        const next = { ...schemas };
-        delete next[table];
-        setSchemas(next);
-        return;
-      }
-      setLoadingSchema(true);
-      try {
-        const schema = await getTableSchema(table);
-        setSchemas((s) => ({ ...s, [table]: schema.columns }));
-      } catch {
-        // schema vazio em caso de erro
-      } finally {
-        setLoadingSchema(false);
-      }
+  // Abrir uma tabela: seleciona no contexto global E preenche o editor (sem executar).
+  const openTable = useCallback(
+    (table: string) => {
+      selectTable(table);
+      insertSelect(table);
     },
-    [schemas]
+    [selectTable, insertSelect]
   );
 
   return (
@@ -226,10 +225,10 @@ function ConsoleInner() {
           </h2>
           <TableList
             tables={tables}
-            schemas={schemas}
-            onSelectTable={insertSelect}
-            onToggleSchema={toggleSchema}
-            loadingSchema={loadingSchema}
+            counts={tableCounts}
+            loadingCounts={loadingCounts}
+            activeTable={activeTable}
+            onSelectTable={openTable}
           />
           <div className="mt-4">
             <h2 className="mb-2 text-sm font-semibold text-slate-300">Histórico</h2>
@@ -239,14 +238,24 @@ function ConsoleInner() {
               </p>
             ) : (
               <div className="space-y-1">
-                {history.map((q, i) => (
+                {history.map((h, i) => (
                   <button
                     key={i}
-                    onClick={() => run(q)}
-                    className="block w-full truncate rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-left font-mono text-[11px] text-slate-400 hover:bg-white/10 hover:text-sky-300"
-                    title={q}
+                    onClick={() => {
+                      if (h.table) selectTable(h.table);
+                      void run(h.query, h.table);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-left hover:bg-white/10"
+                    title={`${h.query}${h.table ? ` (em ${h.table})` : ""}`}
                   >
-                    {q}
+                    <span className="min-w-0 truncate font-mono text-[11px] text-slate-400 hover:text-sky-300">
+                      {h.query}
+                    </span>
+                    {h.table && (
+                      <span className="shrink-0 rounded border border-sky-400/20 bg-sky-400/10 px-1 font-mono text-[9px] text-sky-300/80">
+                        {h.table}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -254,11 +263,20 @@ function ConsoleInner() {
           </div>
         </aside>
 
-        {/* Editor + resultados */}
+        {/* Inspeção da tabela ativa + editor + resultados */}
         <div className="min-w-0 flex-1">
-          <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+          <TableDetails key={activeTable ?? "none"} table={activeTable} />
+
+          <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-2">
-              <span className="text-xs font-semibold text-slate-400">Console SQL</span>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="text-xs font-semibold text-slate-400">Console SQL</span>
+                {activeDatabase && activeTable && (
+                  <span className="truncate rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] text-sky-300">
+                    {activeDatabase}.{activeTable}
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <div
                   className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/20 p-0.5"

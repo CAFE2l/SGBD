@@ -10,6 +10,7 @@ import { buildJsonSql } from "@/lib/profile/json-import";
 import { describeDatabase, duplicateDatabase, exportDatabaseSql, getDatabaseEngine, getProfileStats, importCsv, inspectDatabase, renameDatabase, switchActiveDatabase, dropDatabase, importSql as importSqlInto } from "@/lib/sqlite/db";
 import { appendIoHistory, getFavorites, getGlobalQueryLog, getIoHistory, toggleFavorite, type FavoriteEntry, type GlobalQueryEntry, type IoHistoryEntry } from "@/lib/sqlite/history";
 import { DbCards, IoSection, QueryHistory, Stat, TablesByDb } from "./sections";
+import { ProfileAvatar } from "./ProfileAvatar";
 import { download, type DbCard } from "./types";
 import Papa from "papaparse";
 
@@ -268,7 +269,7 @@ function PerfilInner() {
       <section className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
         <div className="h-1.5 bg-gradient-to-r from-amber-400 via-sky-400 to-emerald-400" />
         <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-400/15 text-3xl font-bold text-sky-300">{(displayName[0] ?? "?").toUpperCase()}</div>
+          <ProfileAvatar />
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-2xl font-bold text-white">{displayName}</h1>
             <p className="truncate text-sm text-slate-400">{user?.email ?? "—"}</p>

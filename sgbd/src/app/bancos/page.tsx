@@ -7,11 +7,15 @@ import { useDb } from "@/hooks/useDb";
 import { RequireAuth } from "@/components/RequireAuth";
 import { dropDatabase, inspectDatabase } from "@/lib/sqlite/db";
 import { getHistory, type HistoryEntry } from "@/lib/sqlite/history";
+import { EnginePicker } from "@/components/EnginePicker";
+import { EngineBadge } from "@/components/EngineBadge";
+import type { EngineId } from "@/lib/profile/engines";
 
 interface DbInfo {
   tableCount: number;
   createdAt: number | null;
   updatedAt: number | null;
+  engine: EngineId;
 }
 
 const COMMAND_COLORS: Record<string, string> = {
@@ -42,7 +46,7 @@ export default function BancosPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [newDbName, setNewDbName] = useState("");
+  const [showPicker, setShowPicker] = useState(false);
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -58,9 +62,15 @@ export default function BancosPage() {
             tableCount: info.tableCount,
             createdAt: info.createdAt,
             updatedAt: info.updatedAt,
+            engine: info.engine,
           };
         } catch {
-          next[name] = { tableCount: 0, createdAt: null, updatedAt: null };
+          next[name] = {
+            tableCount: 0,
+            createdAt: null,
+            updatedAt: null,
+            engine: "postgres",
+          };
         }
       })
     );
@@ -89,21 +99,22 @@ export default function BancosPage() {
     [expanded]
   );
 
-  const createDb = useCallback(async () => {
-    const name = newDbName.trim();
-    if (!name) return;
-    setCreating(true);
-    setPageError(null);
-    try {
-      await createNewDatabase(name);
-      setNewDbName("");
-      await loadInfos();
-    } catch (e) {
-      setPageError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
-    }
-  }, [newDbName, createNewDatabase, loadInfos]);
+  const createDb = useCallback(
+    async (name: string, engine: EngineId) => {
+      setCreating(true);
+      setPageError(null);
+      try {
+        await createNewDatabase(name, engine);
+        setShowPicker(false);
+        await loadInfos();
+      } catch (e) {
+        setPageError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setCreating(false);
+      }
+    },
+    [createNewDatabase, loadInfos]
+  );
 
   const handleDelete = useCallback(
     async (name: string) => {

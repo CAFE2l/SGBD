@@ -656,6 +656,36 @@ export async function describeDatabase(name: string): Promise<{ tableCount: numb
   }
 }
 
+/**
+ * Valida a SINTAXE de uma instrução compulsando-a num banco descartável
+ * (sql.js puro), SEM executar efeitos no banco ativo. Usa `prepare()` (compila
+ * sem rodar), então funciona mesmo para INSERTs cuja tabela ainda não existe.
+ *
+ * Erros de RESOLUÇÃO DE SCHEMA (`no such table|column`) não são erros de
+ * sintaxe: no fluxo de correções a tabela é criada pelo fix do CREATE TABLE
+ * que roda ANTES dos INSERTs. A validação definitiva acontece na execução
+ * real (`importSqlWithCorrections` → `runQuery`).
+ *
+ * Retorna a mensagem do erro de sintaxe, ou null se a sintaxe está válida.
+ */
+export async function validateStatementSyntax(sql: string): Promise<string | null> {
+  try {
+    const Sql = await getSql();
+    const db = new Sql.Database();
+    try {
+      const stmt = db.prepare(sql);
+      stmt.free();
+      return null;
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/no such (table|column)/i.test(msg)) return null;
+    return msg;
+  }
+}
+
 export async function listTablesActive(): Promise<TableInfo[]> {
   const engine = await ensureActiveEngine();
   return listTables(engine);

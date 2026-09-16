@@ -1,5 +1,6 @@
 import type { SqlSuggestion } from "./types";
 import { recordLearningSeen } from "./fix-learning";
+import { validateStatementSyntax } from "@/lib/database-manager";
 
 /**
  * Sugestões de correção automática para comandos SQL que falharam durante a
@@ -39,15 +40,57 @@ export function fixInsertMySqlClauses(sql: string): string {
 }
 
 /**
+ * Converte literais binários de colunas `bit(1)` do MySQL (como o phpMyAdmin
+ * serializa) em booleanos aceitos pelo SQLite, dentro de um INSERT:
+ * - `_binary '\0'`  → FALSE (bit 0)
+ * - `_binary ''`    → TRUE (bit armazenado, valor não-nulo de 1 bit)
+ * - `_binary '\1'`  → TRUE (bit 1)
+ * - `_binary '0'` → FALSE / `_binary '1'` → TRUE
+ * - `b'0'` → FALSE / `b'1'` → TRUE
+ * A conversão é local ao literal; colunas `bit(1)` do CREATE TABLE já mapeiam
+ * para BOOLEAN em `mapColumnType`, mantendo os dois lados sincronizados.
+ */
+export function fixBinaryBitLiterals(sql: string): string {
+  return sql
+    .replace(/_binary\s*'(\\1)'/gi, "TRUE")
+    .replace(/_binary\s*'(\\0)'/gi, "FALSE")
+    .replace(/_binary\s*''/gi, "TRUE")
+    .replace(/_binary\s*'0'/gi, "FALSE")
+    .replace(/_binary\s*'1'/gi, "TRUE")
+    .replace(/\bb'(0)'/gi, "FALSE")
+    .replace(/\bb'(1)'/gi, "TRUE");
+}
+
+/**
+ * Sanitiza um `fixed` gerado: roda o parser de validação (mesmo motor do
+ * import original, sql.js) e devolve o SQL se passar, ou null + mensagem de
+ * erro se a sintaxe ainda for inválida — evitando sugerir uma correção
+ * que sabemos que vai falhar (ex: `near "_binary": syntax error`).
+ */
+async function revalidate(
+  fixed: string,
+  ruleId: string
+): Promise<{ valid: true } | { valid: false; error: string }> {
+  const error = await validateStatementSyntax(fixed);
+  if (error) return { valid: false, error };
+  recordLearningSeen(ruleId);
+  return { valid: true };
+}
+
+/**
  * Gera uma sugestão de correção para um comando que falhou na importação.
  * `index` é 1-based (usado no log como #N).
+ *
+ * Correções "fix" são revalidadas contra o parser do sql.js antes de serem
+ * oferecidas; se a versão corrigida ainda tiver erro de sintaxe, cai para
+ * "manual" em vez de marcar um checkbox que vai falhar de novo.
  */
-export function suggestSqlFix(
+export async function suggestSqlFix(
   index: number,
   keyword: string,
   sql: string,
   message: string
-): SqlSuggestion {
+): Promise<SqlSuggestion> {
   const base = {
     index,
     keyword,
@@ -92,15 +135,17 @@ export function suggestSqlFix(
 
   // ----- USE com aspas invertidas (forma comum em dumps phpMyAdmin) -----
   if (kw === "USE" && /`/.test(sql)) {
-    recordLearningSeen("use-backticks");
     const fixed = sql.replace(/`([^`]+)`/g, "$1");
-    return {
-      ...base,
-      action: "fix",
-      ruleId: "use-backticks",
-      fixed,
-      reason: "Aspas invertidas removidas do nome do banco.",
-    };
+    const check = await revalidate(fixed, "use-backticks");
+    if (check.valid) {
+      return {
+        ...base,
+        action: "fix",
+        ruleId: "use-backticks",
+        fixed,
+        reason: "Aspas invertidas removidas do nome do banco.",
+      };
+    }
   }
 
   // ----- Atalho de sintaxe: erros semânticos ficam para o usuário -----
@@ -117,15 +162,23 @@ export function suggestSqlFix(
   // ----- INSERT -----
   if (kw === "INSERT") {
     const hasControlChars = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(sql);
+    const hasBinaryBit = /_binary\s*'/i.test(sql) || /\bb'[01]'/i.test(sql);
     const hasMySqlClauses =
       /^\s*INSERT\s+IGNORE\s+/i.test(sql) ||
       /ON\s+DUPLICATE\s+KEY\s+UPDATE/i.test(sql);
-    if (hasControlChars || hasMySqlClauses) {
-      const fixed = fixInsertMySqlClauses(sanitizeControlCharacters(sql));
+    if (hasControlChars || hasBinaryBit || hasMySqlClauses) {
+      const fixed = fixInsertMySqlClauses(
+        fixBinaryBitLiterals(sanitizeControlCharacters(sql))
+      );
       const reasons: string[] = [];
       if (hasControlChars) {
         reasons.push(
           "caracteres de controle inválidos foram removidos dos valores"
+        );
+      }
+      if (hasBinaryBit) {
+        reasons.push(
+          "literais binários de bit(1) (_binary/b'..') convertidos para TRUE/FALSE"
         );
       }
       if (/^\s*INSERT\s+IGNORE\s+/i.test(sql)) {
@@ -134,11 +187,25 @@ export function suggestSqlFix(
       if (/ON\s+DUPLICATE\s+KEY\s+UPDATE/i.test(sql)) {
         reasons.push("ON DUPLICATE KEY UPDATE (MySQL) removido");
       }
-      recordLearningSeen(hasControlChars ? "insert-control-chars" : "insert-mysql-clauses");
+      const ruleId = hasBinaryBit
+        ? "insert-binary-boolean"
+        : hasControlChars
+          ? "insert-control-chars"
+          : "insert-mysql-clauses";
+      const check = await revalidate(fixed, ruleId);
+      if (!check.valid) {
+        return {
+          ...base,
+          action: "manual",
+          ruleId,
+          reason:
+            `A correção automática ainda falhou na validação (${check.error}); revise o comando manualmente.`,
+        };
+      }
       return {
         ...base,
         action: "fix",
-        ruleId: hasControlChars ? "insert-control-chars" : "insert-mysql-clauses",
+        ruleId,
         fixed,
         reason: reasons.join("; ").replace(/^./, (c) => c.toUpperCase()) + ".",
       };
@@ -149,15 +216,17 @@ export function suggestSqlFix(
   if (kw === "CREATE" && /^\s*CREATE\s+TABLE/i.test(sql)) {
     const fixed = fixCreateTable(sql);
     if (fixed) {
-      recordLearningSeen("create-table-mysql");
-      return {
-        ...base,
-        action: "fix",
-        ruleId: "create-table-mysql",
-        fixed,
-        reason:
-          "Sintaxe de CREATE TABLE do MySQL convertida para o SQLite (tipos, chaves e opções de tabela).",
-      };
+      const check = await revalidate(fixed, "create-table-mysql");
+      if (check.valid) {
+        return {
+          ...base,
+          action: "fix",
+          ruleId: "create-table-mysql",
+          fixed,
+          reason:
+            "Sintaxe de CREATE TABLE do MySQL convertida para o SQLite (tipos, chaves e opções de tabela).",
+        };
+      }
     }
   }
 

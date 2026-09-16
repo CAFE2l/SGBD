@@ -15,6 +15,7 @@ import {
   signInWithGoogle as googleSignIn,
   signInWithEmail as emailSignIn,
   signUpWithEmail as emailSignUp,
+  updateUserProfile as firebaseUpdateUserProfile,
   signOut as firebaseSignOut,
   type User,
 } from "@/lib/firebase/auth";
@@ -34,6 +35,11 @@ interface AuthContextValue {
     password: string
   ) => Promise<User | null>;
   signOut: () => Promise<void>;
+  /** Atualiza foto/display name no Firebase e reflete no contexto na hora. */
+  updateProfile: (patch: {
+    displayName?: string;
+    photoURL?: string | null;
+  }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -80,6 +86,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const updateProfile = useCallback(
+    async (patch: { displayName?: string; photoURL?: string | null }) => {
+      const u = await firebaseUpdateUserProfile(patch);
+      setUser(u);
+    },
+    []
+  );
+
   const value = useMemo(
     () => ({
       user,
@@ -89,8 +103,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInEmail,
       signUpEmail,
       signOut,
+      updateProfile,
     }),
-    [user, loading, configured, signInGoogle, signInEmail, signUpEmail, signOut]
+    [user, loading, configured, signInGoogle, signInEmail, signUpEmail, signOut, updateProfile]
   );
 
   return (

@@ -54,7 +54,7 @@ export const ENGINES: Record<EngineId, EngineMeta> = {
     id: "mysql",
     label: "MySQL",
     short: "MySQL",
-    tagline: "MySQL — tabelas e relações clássicas",
+    tagline: "O relacional mais usado no mercado e em sala de aula.",
     description:
       "O clássico das aulas de BD: tabelas, chaves primárias e estrangeiras. Ideal para aprender JOIN e modelagem relacional.",
     color: "#f59e0b",
@@ -70,7 +70,7 @@ export const ENGINES: Record<EngineId, EngineMeta> = {
     id: "postgres",
     label: "PostgreSQL",
     short: "Postgres",
-    tagline: "PostgreSQL — mais recursos avançados de SQL",
+    tagline: "Banco relacional robusto, com recursos SQL avançados.",
     description:
       "SQL turbinado: CTEs, window functions, tipos ricos. Mesma base relacional do MySQL, com superpoderes para consultas avançadas.",
     color: "#38bdf8",
@@ -85,7 +85,7 @@ export const ENGINES: Record<EngineId, EngineMeta> = {
     id: "mongodb",
     label: "MongoDB",
     short: "MongoDB",
-    tagline: "MongoDB — documentos flexíveis, sem schema fixo",
+    tagline: "Banco de documentos, flexível, sem schema fixo.",
     description:
       "Sem tabelas rígidas: cada registro é um documento JSON. Ótimo para dados aninhados e prototipagem rápida.",
     color: "#34d399",
