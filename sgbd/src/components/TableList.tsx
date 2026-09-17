@@ -45,7 +45,7 @@ export function TableList({
   return (
     <div className="space-y-1.5">
       {tables.length >= FILTER_THRESHOLD && (
-                <input
+        <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filtrar tabelas..."

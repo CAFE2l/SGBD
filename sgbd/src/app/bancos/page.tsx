@@ -150,19 +150,12 @@ export default function BancosPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            value={newDbName}
-            onChange={(e) => setNewDbName(e.target.value)}
-            placeholder="nome_do_banco"
-            onKeyDown={(e) => e.key === "Enter" && createDb()}
-            className="rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 font-mono text-sm text-white outline-none focus:border-sky-400/60"
-          />
           <button
-            onClick={createDb}
-            disabled={creating || !newDbName.trim()}
-            className="rounded-lg bg-sky-400 px-4 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
+            onClick={() => setShowPicker(true)}
+            disabled={creating}
+            className="rounded-lg bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
           >
-            {creating ? "Criando…" : "+ Novo banco"}
+            + Novo banco
           </button>
         </div>
       </div>
@@ -175,7 +168,7 @@ export default function BancosPage() {
 
       {databases.length === 0 ? (
         <div className="mt-10 rounded-2xl border border-white/10 bg-white/5 p-10 text-center text-sm text-slate-400">
-          Nenhum banco criado ainda. Use o campo acima ou o Console SQL.
+          Nenhum banco criado ainda. Use “+ Novo banco” ou o Console SQL.
         </div>
       ) : (
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -196,13 +189,18 @@ export default function BancosPage() {
                   >
                     <span className="text-slate-500">{isOpen ? "▾" : "▸"}</span>
                     <div className="min-w-0">
-                      <span className="font-mono text-sm font-semibold text-sky-300">
-                        {name}
-                      </span>
-                      <span className="ml-2 rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[10px] text-slate-400">
-                        {info?.tableCount ?? "…"}{" "}
-                        tabela{info?.tableCount === 1 ? "" : "s"}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sm font-semibold text-sky-300">
+                          {name}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[10px] text-slate-400">
+                          {info?.tableCount ?? "…"}{" "}
+                          tabela{info?.tableCount === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <EngineBadge engine={info?.engine ?? "postgres"} />
+                      </div>
                     </div>
                   </button>
                   {isActive && (
@@ -303,6 +301,17 @@ export default function BancosPage() {
             );
           })}
         </div>
+      )}
+
+      {showPicker && (
+        <EnginePicker
+          existingNames={databases}
+          busy={creating}
+          onCancel={() => {
+            if (!creating) setShowPicker(false);
+          }}
+          onConfirm={(name, engine) => void createDb(name, engine)}
+        />
       )}
     </PageShell>
     </RequireAuth>

@@ -311,7 +311,7 @@ function PerfilInner() {
         onExportSql={(n: string) => void doExportSql(n)}
         onExportCsv={(n: string) => void doExportCsv(n)}
         sqlMsg={sqlMsg} csvMsg={csvMsg} />
-      {showPicker && <EnginePicker busy={creating} onCancel={() => setShowPicker(false)} onConfirm={(n, e) => void doCreate(n, e)} />}
+      {showPicker && <EnginePicker existingNames={databases} busy={creating} onCancel={() => setShowPicker(false)} onConfirm={(n, e) => void doCreate(n, e)} />}
     </div>
   );
 }

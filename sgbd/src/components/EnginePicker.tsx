@@ -79,7 +79,12 @@ export function EnginePicker({
   }, [canSubmit, engine, onConfirm, trimmed]);
 
   const transition = { duration: 0.16, ease: "easeOut" as const };
-  const x = reduce ? 0 : 32;
+  const slide = reduce ? 0 : 36;
+  const stepVariants = {
+    enter: (d: number) => ({ opacity: 0, x: slide * d }),
+    center: { opacity: 1, x: 0 },
+    exit: (d: number) => ({ opacity: 0, x: -slide * d }),
+  };
 
   return (
     <div
@@ -154,11 +159,7 @@ export function EnginePicker({
           <motion.div
             key={step}
             custom={dirRef.current}
-            variants={{
-              enter: (d: number) => ({ opacity: 0, x }),
-              center: { opacity: 1, x: 0 },
-              exit: (d: number) => ({ opacity: 0, x: -x }),
-            }}
+            variants={stepVariants}
             initial="enter"
             animate="center"
             exit="exit"
