@@ -103,15 +103,10 @@ export function TableDetails({
     return m;
   }, [fks]);
 
-  const hasStructure =
-    !!schema &&
-    schema.columns.some((c) => c.pk > 0) &&
-    fks.length > 0;
-  const hasNoKeys =
-    !!schema &&
-    schema.columns.length > 0 &&
-    schema.columns.every((c) => c.pk === 0) &&
-    fks.length === 0;
+  const hasPk = !!schema && schema.columns.some((c) => c.pk > 0);
+  const hasFks = !!schema && fks.length > 0;
+  const hasStructure = hasPk && hasFks;
+  const hasNoKeys = !!schema && schema.columns.length > 0 && !hasPk && !hasFks;
 
   if (!table) {
     return (
@@ -243,7 +238,8 @@ export function TableDetails({
                         )}
                       </td>
                       <td className="px-3 py-1.5 text-slate-400">
-                        {c.notnull === 1 ? "Não" : "Sim"}
+                        {/* INTEGER PRIMARY KEY is implicitly NOT NULL, even if notnull flag is 0 */}
+                        {c.pk > 0 || c.notnull === 1 ? "Não" : "Sim"}
                       </td>
                       <td className="px-3 py-1.5 text-slate-400">
                         {c.dflt_value ?? "—"}

@@ -212,21 +212,12 @@ function isDateTime(value: string): boolean {
 /**
  * Detect if a value represents a boolean
  */
-function isBoolean(value: string): boolean {
+function isBooleanValue(value: string): boolean {
   const lower = value.toLowerCase().trim();
   return lower === "true" || lower === "false" || 
          lower === "sim" || lower === "nao" || lower === "não" ||
          lower === "1" || lower === "0" ||
          value === "S" || value === "N";
-}
-
-/**
- * Convert boolean string to standard form
- */
-function toBooleanString(value: string): string {
-  const lower = value.toLowerCase().trim();
-  if (lower === "true" || lower === "sim" || lower === "1" || value === "S") return "TRUE";
-  return "FALSE";
 }
 
 /**
@@ -248,7 +239,7 @@ export function inferColumnType(values: (string | null)[]): ColumnType {
     const trimmed = v.trim();
     
     // Check for boolean
-    if (isBoolean(trimmed)) {
+    if (isBooleanValue(trimmed)) {
       hasBoolean = true;
       booleanCount++;
       continue;

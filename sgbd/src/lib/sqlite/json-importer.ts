@@ -8,7 +8,7 @@
  * 4. Schema-aware format (includes columns, PK, FK metadata)
  */
 
-import type { TableSchema, ColumnInfo, ForeignKeyInfo } from "./types";
+import type { TableSchema, ForeignKeyInfo } from "./types";
 
 export type ColumnType = "INTEGER" | "REAL" | "TEXT" | "DATE" | "DATETIME" | "BOOLEAN";
 

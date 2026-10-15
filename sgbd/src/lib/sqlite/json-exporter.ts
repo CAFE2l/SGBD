@@ -67,17 +67,6 @@ function extractPrimaryKey(schema: TableSchema): string[] | undefined {
 }
 
 /**
- * Build a column map for FK lookups
- */
-function buildFkMap(fks: ForeignKeyInfo[]): Map<string, string> {
-  const fkMap = new Map<string, string>();
-  for (const fk of fks) {
-    fkMap.set(`${fk.from}@${fk.table}`, fk.to);
-  }
-  return fkMap;
-}
-
-/**
  * Convert FK info to FK def
  */
 function fkToDef(fk: ForeignKeyInfo): ForeignKeyDef {
@@ -213,4 +202,30 @@ export function getJsonColumns(data: Record<string, unknown>[]): Set<string> {
   }
   
   return jsonCols;
+}
+
+/**
+ * Main export function - can export data-only or schema-aware
+ */
+export async function buildJsonExport(
+  tableName: string,
+  options: { includeSchema?: boolean },
+  schema?: TableSchema,
+  fks?: ForeignKeyInfo[],
+  data?: { columns: string[]; rows: Record<string, unknown>[] }
+): Promise<JsonDataOnly | TableDef> {
+  if (!data) {
+    throw new Error(`No data available for table ${tableName}`);
+  }
+  
+  if (options?.includeSchema && schema) {
+    return exportTableAsSchemaAwareJson(
+      tableName,
+      schema,
+      fks || [],
+      data
+    );
+  }
+  
+  return exportTableDataAsJson(tableName, data);
 }

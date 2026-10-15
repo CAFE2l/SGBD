@@ -15,9 +15,7 @@ import {
   saveActive,
   getActiveDatabase,
   recordDatabaseActivity,
-  listTables as listTablesRaw,
 } from "@/lib/database-manager";
-import { rebuildTable } from "./db";
 import type {
   TableInfo,
   TableSchema,
@@ -35,7 +33,7 @@ type ListenerSet = Set<Listener>;
 /**
  * Internal cache for subscriptions
  */
-let listeners: ListenerSet = new Set();
+const listeners: ListenerSet = new Set();
 
 /**
  * Schema version counter - increments on DDL operations
@@ -97,20 +95,6 @@ function bumpSchema(): void {
 function bumpData(): void {
   dataVersion++;
   notify();
-}
-
-/**
- * Quote an identifier for SQL
- */
-function quoteIdent(ident: string): string {
-  return `"${ident.replace(/"/g, '""')}`;
-}
-
-/**
- * Unquote an identifier
- */
-function unquoteIdent(ident: string): string {
-  return ident.replace(/^["`[\]]+|["`\]]+$/g, "");
 }
 
 /**
@@ -371,10 +355,9 @@ export async function dropTable(name: string): Promise<void> {
  */
 export async function renameTable(oldName: string, newName: string): Promise<void> {
   const engine = await ensureActiveEngine();
-  const cleanOld = sanitizeTableName(oldName);
   const cleanNew = sanitizeTableName(newName);
 
-  const sql = `ALTER TABLE "${cleanName}" RENAME TO "${cleanNew}";`;
+  const sql = `ALTER TABLE "${oldName}" RENAME TO "${cleanNew}";`;
   engine.exec(sql);
   saveActive();
   recordDatabaseActivity(getActiveDatabase(), "ALTER", sql);
@@ -694,32 +677,6 @@ export async function buildExportSql(
   const includeData = options?.includeData ?? true;
   const format = options?.format ?? "sqlite";
   
-  const colDefs = schema.columns.map(c => {
-    let def = `"${c.name}"`;
-    let type = c.type || "TEXT";
-    
-    // Convert to MySQL format if needed
-    if (format === "mysql") {
-      type = type.replace(/\bTEXT\b/g, "LONGTEXT")
-                  .replace(/\bINTEGER\b/g, "INT")
-                  .replace(/\bREAL\b/g, "DOUBLE");
-    }
-    
-    if (type) def += ` ${type}`;
-    if (c.pk > 0) {
-      if (format === "mysql") {
-        def = `PRIMARY KEY (${def})`; // Will be combined later
-      } else {
-        def += " PRIMARY KEY";
-      }
-    }
-    if (c.notnull) def += " NOT NULL";
-    if (c.dflt_value) {
-      def += ` DEFAULT ${c.dflt_value}`;
-    }
-    return def;
-  }).join(", ");
-  
   const finalColDefs = schema.columns.map(c => {
     let def = `"${c.name}"`;
     let type = c.type || "TEXT";
@@ -767,14 +724,6 @@ export async function buildJsonExport(
     const schema = await getTableSchemaInternal(table);
     const fks = await getForeignKeysInternal(table);
     const data = await getTableData(table, Number.MAX_SAFE_INTEGER);
-    
-    const columns = schema.columns.map(c => ({
-      name: c.name,
-      type: c.type || "TEXT",
-      nullable: c.notnull === 0,
-      default: c.dflt_value,
-      pk: c.pk > 0,
-    }));
     
     // Find primary key column(s)
     const pkCols = schema.columns.filter(c => c.pk > 0).map(c => ({name: c.name, order: c.pk}));

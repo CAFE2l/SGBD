@@ -1050,10 +1050,22 @@ export async function importSql(sql: string): Promise<ImportReport> {
   const suggestionsWithDeps = detectDependencies(suggestions);
 
   const tables = await listTables(engine);
+  
+  // Calculate total row count across all tables
+  let totalRowCount = 0;
+  for (const t of tables) {
+    try {
+      const count = await countTable(t.name);
+      totalRowCount += count;
+    } catch {
+      // Ignore errors for individual tables
+    }
+  }
+  
   return {
     tableName: tables.map((t) => t.name).join(", "),
     tableCount: tables.length,
-    rowCount: tables.length,
+    rowCount: totalRowCount,
     log,
     errors,
     code: sql,

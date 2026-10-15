@@ -12,6 +12,7 @@ import {
   getEditableTableData,
   updateTableCell,
 } from "@/lib/sqlite/db";
+import { buildJsonExport, type TableDef } from "@/lib/sqlite/json-exporter";
 import type { QueryResult, Row } from "@/lib/sqlite/types";
 
 function download(filename: string, content: string, mime: string) {
@@ -71,26 +72,6 @@ export default function ExportarPage() {
     []
   );
 
-  const previewCsv = useCallback(
-    async (table: string) => {
-      setBusy(table);
-      setError(null);
-      try {
-        const content = await exportTableCsv(table);
-        const lines = content.split("\n");
-        const head = lines.slice(0, 12).join("\n");
-        const tail =
-          lines.length > 12 ? `\n… (+${lines.length - 12} linhas)` : "";
-        setPreview({ title: `${table}.csv`, content: head + tail });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(null);
-      }
-    },
-    []
-  );
-
   const exportAllSql = useCallback(async () => {
     setBusy("all");
     setError(null);
@@ -124,17 +105,82 @@ export default function ExportarPage() {
     }
   }, [activeDatabase]);
 
+  const exportOneSql = useCallback(
+    async (table: string) => {
+      setBusy(table);
+      setError(null);
+      try {
+        // Build schema-aware JSON
+        const result = await buildJsonExport(table, { includeSchema: true }) as TableDef;
+        const content = JSON.stringify(result, null, 2);
+        download(`${table}.json`, content, "application/json");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    []
+  );
+
+  const exportOneJson = useCallback(async (table: string, asSchemaAware: boolean) => {
+    setBusy(table);
+    setError(null);
+    try {
+      const result = await buildJsonExport(table, { includeSchema: asSchemaAware });
+      const content = JSON.stringify(result, null, 2);
+      download(`${table}.json`, content, "application/json");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const exportAllJson = useCallback(async (asSchemaAware = false) => {
+    setBusy("all");
+    setError(null);
+    try {
+      const tablesData: Record<string, unknown> = {};
+      
+      for (const t of tables) {
+        const tableDef = await buildJsonExport(t.name, { includeSchema: asSchemaAware });
+        tablesData[t.name] = tableDef;
+      }
+      
+      const exportData = { tables: tablesData };
+      const content = JSON.stringify(exportData, null, 2);
+      download(`${activeDatabase ?? "banco"}.json`, content, "application/json");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [tables, activeDatabase]);
+
   const startEditing = useCallback((table: string) => {
     setEditingTable(table);
     setPreview(null);
   }, []);
+
+  const exportOneJsonDataOnly = useCallback(
+    async (table: string) => {
+      await exportOneJson(table, false);
+    },
+    [exportOneJson]
+  );
+
+  const exportAllJsonSchemaAware = useCallback(() => {
+    return exportAllJson(true);
+  }, [exportAllJson]);
 
   if (tables.length === 0) {
     return (
       <PageShell>
         <h1 className="text-2xl font-bold text-white">Exportar</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Revise e corrija os dados antes de baixar como CSV ou SQL.
+          Corrija valores mal importados e depois exporte como CSV, JSON ou SQL.
+          Formatos: .sql (SQLite/MySQL), .csv, .json (dados ou com esquema).
         </p>
         <div className="mt-10 rounded-2xl border border-white/10 bg-white/5 p-10 text-center">
           <p className="text-sm text-slate-400">
@@ -158,8 +204,14 @@ export default function ExportarPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Exportar</h1>
           <p className="mt-1 text-sm text-slate-400">
-            Corrija valores mal importados e depois exporte CSV ou SQL.
+            Corrija valores mal importados e depois exporte como CSV, JSON ou SQL.
           </p>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            <span className="text-slate-500">• CSV: sem chaves primárias/estrangeiras</span>
+            <span className="text-slate-500">• JSON dados: apenas dados</span>
+            <span className="text-slate-500">• JSON esquema: dados + esquema completo</span>
+            <span className="text-slate-500">• SQL: SQLite (ou MySQL)</span>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <label className="text-xs font-semibold text-slate-400">Banco:</label>
@@ -179,7 +231,7 @@ export default function ExportarPage() {
             disabled={busy !== null}
             className="rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold text-slate-400 hover:bg-white/5 disabled:opacity-40"
           >
-            Prévia
+            Prévia SQL
           </button>
           <button
             onClick={exportAllSql}
@@ -188,6 +240,24 @@ export default function ExportarPage() {
           >
             {busy === "all" ? "Gerando…" : "Exportar banco como .sql"}
           </button>
+          <div className="relative inline-block">
+            <select
+              onChange={(e) => {
+                const action = e.target.value;
+                if (action === "json-data") exportAllJson(false);
+                if (action === "json-schema") exportAllJsonSchemaAware();
+              }}
+              disabled={busy !== null}
+              className="appearance-none rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-xs text-slate-400 outline-none"
+            >
+              <option value="" disabled>Exportar JSON:</option>
+              <option value="json-data">Dados (.json)</option>
+              <option value="json-schema">Dados + esquema (.json)</option>
+            </select>
+            <svg className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </div>
         </div>
       </div>
 
@@ -217,28 +287,36 @@ export default function ExportarPage() {
                   {counts[t.name] ?? "…"}
                 </td>
                 <td className="px-4 py-3">
-                  <div className="flex justify-end gap-2">
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => startEditing(t.name)}
                       disabled={busy !== null}
                       className="rounded-lg bg-amber-400/15 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-400/25 disabled:opacity-40"
                     >
-                      {editingTable === t.name ? "Editando…" : "Revisar dados"}
+                      {editingTable === t.name ? "Editando…" : "Revisar"}
                     </button>
-                    <button
-                      onClick={() => previewCsv(t.name)}
-                      disabled={busy !== null}
-                      className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 hover:bg-white/5 disabled:opacity-40"
-                    >
-                      Prévia
-                    </button>
-                    <button
-                      onClick={() => exportOneCsv(t.name)}
-                      disabled={busy !== null}
-                      className="rounded-lg bg-sky-400/15 px-3 py-1.5 text-xs font-semibold text-sky-300 hover:bg-sky-400/25 disabled:opacity-40"
-                    >
-                      {busy === t.name ? "Gerando…" : "Exportar CSV"}
-                    </button>
+                    <div className="relative inline-block">
+                      <select
+                        onChange={(e) => {
+                          const action = e.target.value;
+                          if (action === "csv") exportOneCsv(t.name);
+                          if (action === "json-data") exportOneJsonDataOnly(t.name);
+                          if (action === "json-schema") exportOneSql(t.name);
+                          // Reset the select
+                          (e.target as HTMLSelectElement).value = "";
+                        }}
+                        disabled={busy !== null}
+                        className="appearance-none rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-[11px] text-slate-400 outline-none"
+                      >
+                        <option value="">Exportar…</option>
+                        <option value="csv">CSV</option>
+                        <option value="json-data">JSON (dados)</option>
+                        <option value="json-schema">JSON (esquema)</option>
+                      </select>
+                      <svg className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
                   </div>
                 </td>
               </tr>

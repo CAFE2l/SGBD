@@ -1315,7 +1315,7 @@ function ErDiagramRoot() {
         </span>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-10 flex flex-col items-center gap-2">
+      <div className="pointer-events-none absolute inset-x-0 bottom-28 flex flex-col items-center gap-2">
         {fkPick ? (
           <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-400/10 px-4 py-1.5 text-[11px] text-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.25)] backdrop-blur">
             <motion.span
@@ -1335,9 +1335,9 @@ function ErDiagramRoot() {
             </button>
           </div>
         ) : (
-          <p className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1 text-[10px] text-slate-500 backdrop-blur">
-            fonte: schema real do banco · arraste uma coluna até outra para criar
-            um relacionamento (FK)
+          <p className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-400 backdrop-blur">
+            <span className="hidden md:inline">fonte: schema real do banco · </span>
+            arraste uma coluna até outra para criar um relacionamento (FK)
           </p>
         )}
         <AnimatePresence>

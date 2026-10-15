@@ -62,40 +62,40 @@ export function ResultTable({
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-white/10">
-      <div className="max-h-[480px] overflow-auto">
-        <table className="w-full border-collapse text-left text-sm">
-          <thead className="sticky top-0 bg-slate-900/95 backdrop-blur">
-            <tr>
+    <div className="overflow-x-auto rounded-xl border border-white/10">
+      <table className="min-w-full border-collapse text-left text-sm">
+        <thead className="sticky top-0 bg-slate-900/95 backdrop-blur">
+          <tr>
+            {columns.map((col) => (
+              <th
+                key={col}
+                onClick={() => toggleSort(col)}
+                className="cursor-pointer select-none whitespace-nowrap border-b border-white/10 bg-slate-900/95 px-3 py-2 font-mono text-xs font-semibold text-sky-300 hover:bg-white/5"
+              >
+                {col}
+                <span className={`ml-1 ${sortCol === col ? "text-white" : "text-sky-300/60"}`}>
+                  {sortCol === col ? (sortDir === 1 ? " ▲" : " ▼") : "⇅"}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {pageRows.map((row, i) => (
+            <tr key={i} className="transition-colors hover:bg-white/5">
               {columns.map((col) => (
-                <th
+                <td
                   key={col}
-                  onClick={() => toggleSort(col)}
-                  className="cursor-pointer select-none whitespace-nowrap border-b border-white/10 px-3 py-2 font-mono text-xs font-semibold text-sky-300 hover:bg-white/5"
+                  className="border-b border-white/5 px-3 py-1.5 whitespace-nowrap text-slate-300"
+                  title={String(row[col] ?? "")}
                 >
-                  {col}
-                  {sortCol === col ? (sortDir === 1 ? " ▲" : " ▼") : ""}
-                </th>
+                  {formatCell(row[col])}
+                </td>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {pageRows.map((row, i) => (
-              <tr key={i} className="transition-colors hover:bg-white/5">
-                {columns.map((col) => (
-                  <td
-                    key={col}
-                    className="max-w-[280px] truncate border-b border-white/5 px-3 py-1.5 whitespace-nowrap text-slate-300"
-                    title={String(row[col] ?? "")}
-                  >
-                    {formatCell(row[col])}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-xs text-slate-400">
           <span>
