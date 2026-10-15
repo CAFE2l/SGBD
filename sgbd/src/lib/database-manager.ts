@@ -1166,8 +1166,8 @@ function friendlyError(stmt: string, msg: string): string {
     const t = stmt.match(/FROM\s+(\w+)|\binto\s+(\w+)|\bTABLE\s+(\w+)/i);
     const name = t ? t[1] || t[2] || t[3] : "";
     return name
-      ? `Tabela "${name}" não existe no banco ativo. (${msg})`
-      : `Tabela não encontrada. (${msg})`;
+      ? `Tabela "${name}" não existe no banco ativo.`
+      : `Tabela não encontrada.`;
   }
   return msg;
 }

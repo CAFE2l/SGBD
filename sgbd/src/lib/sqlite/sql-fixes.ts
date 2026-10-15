@@ -1,6 +1,7 @@
 import type { SqlSuggestion } from "./types";
 import { recordLearningSeen } from "./fix-learning";
 import { validateStatementSyntax } from "@/lib/database-manager";
+import { truncateSql, formatTruncatedMeta } from "./sql-truncate";
 
 /**
  * Sugestões de correção automática para comandos SQL que falharam durante a
@@ -91,10 +92,13 @@ export async function suggestSqlFix(
   sql: string,
   message: string
 ): Promise<SqlSuggestion> {
+  const originalTrunc = truncateSql(sql);
   const base = {
     index,
     keyword,
     original: sql,
+    originalTruncated: originalTrunc.preview,
+    originalMeta: formatTruncatedMeta(originalTrunc),
     message,
   };
 
@@ -138,11 +142,14 @@ export async function suggestSqlFix(
     const fixed = sql.replace(/`([^`]+)`/g, "$1");
     const check = await revalidate(fixed, "use-backticks");
     if (check.valid) {
+      const fixedTrunc = truncateSql(fixed);
       return {
         ...base,
         action: "fix",
         ruleId: "use-backticks",
         fixed,
+        fixedTruncated: fixedTrunc.preview,
+        fixedMeta: formatTruncatedMeta(fixedTrunc),
         reason: "Aspas invertidas removidas do nome do banco.",
       };
     }
@@ -202,11 +209,14 @@ export async function suggestSqlFix(
             `A correção automática ainda falhou na validação (${check.error}); revise o comando manualmente.`,
         };
       }
+      const fixedTrunc = truncateSql(fixed);
       return {
         ...base,
         action: "fix",
         ruleId,
         fixed,
+        fixedTruncated: fixedTrunc.preview,
+        fixedMeta: formatTruncatedMeta(fixedTrunc),
         reason: reasons.join("; ").replace(/^./, (c) => c.toUpperCase()) + ".",
       };
     }
@@ -218,11 +228,14 @@ export async function suggestSqlFix(
     if (fixed) {
       const check = await revalidate(fixed, "create-table-mysql");
       if (check.valid) {
+        const fixedTrunc = truncateSql(fixed);
         return {
           ...base,
           action: "fix",
           ruleId: "create-table-mysql",
           fixed,
+          fixedTruncated: fixedTrunc.preview,
+          fixedMeta: formatTruncatedMeta(fixedTrunc),
           reason:
             "Sintaxe de CREATE TABLE do MySQL convertida para o SQLite (tipos, chaves e opções de tabela).",
         };

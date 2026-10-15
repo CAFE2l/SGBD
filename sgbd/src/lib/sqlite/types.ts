@@ -61,7 +61,7 @@ export interface QueryScriptResult {
  * - "fix": existe uma versão corrigida executável (ver `fixed`).
  * - "manual": não é possível corrigir automaticamente; exige edição manual.
  */
-export type SqlSuggestionAction = "remove" | "fix" | "manual";
+export type SqlSuggestionAction = "remove" | "fix" | "manual" | "dependente";
 
 /** Sugestão de correção para um comando que falhou na importação. */
 export interface SqlSuggestion {
@@ -69,8 +69,12 @@ export interface SqlSuggestion {
   index: number;
   /** Palavra-chave do comando (CREATE, INSERT, SET…). */
   keyword: string;
-  /** SQL original que falhou. */
+  /** SQL original que falhou (não usar diretamente na UI, usar originalTruncated). */
   original: string;
+  /** SQL original truncado para exibição na UI. */
+  originalTruncated: string;
+  /** Metadados do SQL original truncado. */
+  originalMeta: string;
   /** Mensagem de erro retornada pelo motor. */
   message: string;
   /** Ação sugerida. */
@@ -79,8 +83,14 @@ export interface SqlSuggestion {
   reason: string;
   /** SQL corrigido (presente quando action === "fix"). */
   fixed?: string;
+  /** SQL corrigido truncado para exibição na UI (quando action === "fix"). */
+  fixedTruncated?: string;
+  /** Metadados do SQL corrigido truncado (quando action === "fix"). */
+  fixedMeta?: string;
   /** Identificador da regra de correção (para estatísticas de aprendizado). */
   ruleId: string;
+  /** Índice do comando do qual este depende (quando action === "dependente"). */
+  dependsOn?: number;
 }
 
 export interface ImportReport {

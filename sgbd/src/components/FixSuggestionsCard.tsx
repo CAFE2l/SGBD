@@ -7,6 +7,7 @@ interface FixSuggestionsCardProps {
   suggestions: SqlSuggestion[];
   busy: boolean;
   onApply: (selectedIndexes: number[]) => Promise<void>;
+  onAutoFix?: () => Promise<void>;
 }
 
 const ACTION_META: Record<
@@ -25,12 +26,17 @@ const ACTION_META: Record<
     label: "manual",
     className: "bg-slate-500/20 text-slate-300",
   },
+  dependente: {
+    label: "dependente",
+    className: "bg-sky-400/15 text-sky-300",
+  },
 };
 
 export function FixSuggestionsCard({
   suggestions,
   busy,
   onApply,
+  onAutoFix,
 }: FixSuggestionsCardProps) {
   const selectable = useMemo(
     () =>
@@ -58,6 +64,31 @@ export function FixSuggestionsCard({
   }, []);
 
   const hasSelected = selected.size > 0;
+  const allSelected = selected.size === selectable.length;
+
+  const toggleAll = useCallback(() => {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(selectable));
+    }
+  }, [allSelected, selectable]);
+
+  // Paginação para grandes listas
+  const PAGE_SIZE = 20;
+  const [showAll, setShowAll] = useState(false);
+  const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set());
+  const visibleSuggestions = showAll ? suggestions : suggestions.slice(0, PAGE_SIZE);
+  const hasMore = suggestions.length > PAGE_SIZE;
+
+  const toggleExpanded = useCallback((index: number) => {
+    setExpandedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }, []);
 
   return (
     <div className="mt-8 rounded-2xl border border-amber-400/30 bg-amber-400/5 p-5">
@@ -86,19 +117,21 @@ export function FixSuggestionsCard({
           </p>
         </div>
         <button
-          onClick={() => setSelected(new Set(selectable))}
+          onClick={toggleAll}
           disabled={busy}
           className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-slate-400 hover:bg-white/5 disabled:opacity-40"
         >
-          Selecionar todos
+          {allSelected ? "Desmarcar todos" : "Selecionar todos"}
         </button>
       </div>
 
       <div className="mt-4 space-y-3">
-        {suggestions.map((s) => {
+        {visibleSuggestions.map((s) => {
           const meta = ACTION_META[s.action];
           const checkable = s.action !== "manual";
           const checked = selected.has(s.index);
+          const expanded = expandedIndices.has(s.index);
+
           return (
             <div
               key={s.index}
@@ -134,24 +167,81 @@ export function FixSuggestionsCard({
                     <span className="truncate text-[11px] text-slate-400">
                       {s.reason}
                     </span>
+                    {s.action === "dependente" && s.dependsOn && (
+                      <span className="text-[11px] text-sky-300">
+                        (depende do #{s.dependsOn})
+                      </span>
+                    )}
                   </div>
 
                   <div className="mt-2 space-y-1 font-mono text-[11px] leading-relaxed">
-                    <div className="text-slate-500 line-through decoration-rose-400/60">
-                      {s.original}
-                    </div>
-                    {s.action === "fix" && s.fixed ? (
-                      <div className="text-emerald-300">{s.fixed}</div>
-                    ) : s.action === "remove" ? (
+                    {!expanded ? (
+                      <>
+                        <div className="text-slate-500 line-through decoration-rose-400/60">
+                          {s.originalTruncated}
+                        </div>
+                        {s.originalMeta && (
+                          <div className="text-slate-600 text-[10px]">
+                            {s.originalMeta}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="max-h-80 overflow-auto rounded border border-white/10 bg-black/40 p-2">
+                        <pre className="whitespace-pre-wrap text-slate-300">
+                          {s.original}
+                        </pre>
+                      </div>
+                    )}
+
+                    {s.action === "fix" && s.fixed && (
+                      <>
+                        {!expanded ? (
+                          <>
+                            <div className="text-emerald-300">{s.fixedTruncated}</div>
+                            {s.fixedMeta && (
+                              <div className="text-emerald-400/60 text-[10px]">
+                                {s.fixedMeta}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="max-h-80 overflow-auto rounded border border-white/10 bg-black/40 p-2">
+                            <pre className="whitespace-pre-wrap text-emerald-300">
+                              {s.fixed}
+                            </pre>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {s.action === "remove" && (
                       <div className="text-amber-300/80">
                         — comando descartado na reimportação.
                       </div>
-                    ) : (
+                    )}
+                    {s.action === "manual" && (
                       <div className="text-slate-300/80">
                         {s.message} — ajuste manualmente no Console SQL.
                       </div>
                     )}
+                    {s.action === "dependente" && (
+                      <div className="text-sky-300/80">
+                        Será executado novamente após a correção do #{s.dependsOn}.
+                      </div>
+                    )}
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      toggleExpanded(s.index);
+                    }}
+                    className="mt-2 text-[11px] text-sky-300 hover:text-sky-200 underline"
+                    aria-expanded={expanded}
+                  >
+                    {expanded ? "Ocultar" : "Ver completo"}
+                  </button>
                 </div>
               </label>
             </div>
@@ -159,7 +249,28 @@ export function FixSuggestionsCard({
         })}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+      {hasMore && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="mt-2 text-[11px] text-sky-300 hover:text-sky-200 underline"
+        >
+          Mostrar mais ({suggestions.length - PAGE_SIZE} comandos restantes)
+        </button>
+      )}
+
+      <div className="sticky bottom-0 mt-4 flex flex-wrap items-center gap-3 rounded-t-xl bg-amber-400/5 py-4">
+        <span className="text-xs text-slate-400">
+          {selected.size} de {selectable.length} selecionados
+        </span>
+        {onAutoFix && (
+          <button
+            onClick={onAutoFix}
+            disabled={busy}
+            className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
+          >
+            {busy ? "Aplicando…" : "Corrigir tudo automaticamente"}
+          </button>
+        )}
         <button
           onClick={() =>
             onApply(suggestions.map((s) => s.index).filter((i) => selected.has(i)))

@@ -24,6 +24,7 @@ import type {
 } from "./types";
 import { suggestSqlFix } from "./sql-fixes";
 import { recordLearningFixed } from "./fix-learning";
+import { truncateSql, formatTruncatedMeta } from "./sql-truncate";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { getHistory } from "./history";
 import {
@@ -926,90 +927,97 @@ export async function importCsv(
   const log: string[] = [];
   const errors: string[] = [];
 
-  const cleanName = tableName.trim().replace(/[^a-zA-Z0-9_]/g, "_");
-  if (!cleanName) throw new Error("Nome de tabela inválido.");
+  // Desliga foreign keys
+  engine.run("PRAGMA foreign_keys = OFF;");
 
-  const columns = parsed.columns.map(
-    (c) =>
-      c.trim().replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+|_+$/g, "") || "col"
-  );
-  const seen = new Set<string>();
-  const uniqueCols = columns.map((c) => {
-    let name = c;
-    let i = 1;
-    while (seen.has(name.toLowerCase())) {
-      name = `${c}_${i++}`;
-    }
-    seen.add(name.toLowerCase());
-    return name;
-  });
+  try {
+    const cleanName = tableName.trim().replace(/[^a-zA-Z0-9_]/g, "_");
+    if (!cleanName) throw new Error("Nome de tabela inválido.");
 
-  const existing = await listTables(engine);
-  if (existing.some((t) => t.name.toLowerCase() === cleanName.toLowerCase())) {
-    throw new Error(
-      `A tabela "${cleanName}" já existe. Use Resetar banco ou escolha outro nome.`
+    const columns = parsed.columns.map(
+      (c) =>
+        c.trim().replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+|_+$/g, "") || "col"
     );
-  }
+    const seen = new Set<string>();
+    const uniqueCols = columns.map((c) => {
+      let name = c;
+      let i = 1;
+      while (seen.has(name.toLowerCase())) {
+        name = `${c}_${i++}`;
+      }
+      seen.add(name.toLowerCase());
+      return name;
+    });
 
-  const types = uniqueCols.map((_, ci) => {
-    const provided = explicitTypes?.[ci]?.toUpperCase();
-    if (provided === "INTEGER" || provided === "REAL" || provided === "TEXT") {
-      return provided;
+    const existing = await listTables(engine);
+    if (existing.some((t) => t.name.toLowerCase() === cleanName.toLowerCase())) {
+      throw new Error(
+        `A tabela "${cleanName}" já existe. Use Resetar banco ou escolha outro nome.`
+      );
     }
-    const values = parsed.rows.map((r) => r[ci] ?? null);
-    return inferType(values);
-  });
 
-  const createSql = `CREATE TABLE "${cleanName}" (${uniqueCols
-    .map((c, i) => `"${c}" ${types[i]}`)
-    .join(", ")});`;
-  engine.exec(createSql);
-  log.push(`Tabela "${cleanName}" criada (${uniqueCols.join(", ")}).`);
+    const types = uniqueCols.map((_, ci) => {
+      const provided = explicitTypes?.[ci]?.toUpperCase();
+      if (provided === "INTEGER" || provided === "REAL" || provided === "TEXT") {
+        return provided;
+      }
+      const values = parsed.rows.map((r) => r[ci] ?? null);
+      return inferType(values);
+    });
 
-  const insertStmt = `INSERT INTO "${cleanName}" (${uniqueCols
-    .map((c) => `"${c}"`)
-    .join(", ")}) VALUES (${uniqueCols.map(() => "?").join(", ")});`;
-  const stmt = engine.prepare(insertStmt);
-  let inserted = 0;
-  for (const row of parsed.rows) {
-    try {
-      const bound = uniqueCols.map((_, ci) => {
-        const raw = row[ci];
-        if (raw == null || raw === "") return null;
-        const type = types[ci];
-        if (type === "INTEGER") {
-          const n = Number(raw);
-          return Number.isInteger(n) ? n : raw;
-        }
-        if (type === "REAL") {
-          const n = Number(raw);
-          return Number.isNaN(n) ? raw : n;
-        }
-        return raw;
-      });
-      stmt.run(bound);
-      inserted++;
-    } catch (e) {
-      errors.push(`Linha ${inserted + 1}: ${e instanceof Error ? e.message : String(e)}`);
+    const createSql = `CREATE TABLE "${cleanName}" (${uniqueCols
+      .map((c, i) => `"${c}" ${types[i]}`)
+      .join(", ")});`;
+    engine.exec(createSql);
+    log.push(`Tabela "${cleanName}" criada (${uniqueCols.join(", ")}).`);
+
+    const insertStmt = `INSERT INTO "${cleanName}" (${uniqueCols
+      .map((c) => `"${c}"`)
+      .join(", ")}) VALUES (${uniqueCols.map(() => "?").join(", ")});`;
+    const stmt = engine.prepare(insertStmt);
+    let inserted = 0;
+    for (const row of parsed.rows) {
+      try {
+        const bound = uniqueCols.map((_, ci) => {
+          const raw = row[ci];
+          if (raw == null || raw === "") return null;
+          const type = types[ci];
+          if (type === "INTEGER") {
+            const n = Number(raw);
+            return Number.isInteger(n) ? n : raw;
+          }
+          if (type === "REAL") {
+            const n = Number(raw);
+            return Number.isNaN(n) ? raw : n;
+          }
+          return raw;
+        });
+        stmt.run(bound);
+        inserted++;
+      } catch (e) {
+        errors.push(`Linha ${inserted + 1}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
+    stmt.free();
+
+    save();
+    log.push(`${inserted} linha(s) inserida(s).`);
+    if (errors.length) log.push(`${errors.length} erro(s) ignorado(s).`);
+
+    const code = buildCsvSql(cleanName, uniqueCols, parsed.rows, types);
+    recordDatabaseActivity(getActiveDatabase(), "IMPORT", code);
+
+    return {
+      tableName: cleanName,
+      tableCount: 1,
+      rowCount: inserted,
+      log,
+      errors,
+      code,
+    };
+  } finally {
+    engine.run("PRAGMA foreign_keys = ON;");
   }
-  stmt.free();
-
-  save();
-  log.push(`${inserted} linha(s) inserida(s).`);
-  if (errors.length) log.push(`${errors.length} erro(s) ignorado(s).`);
-
-  const code = buildCsvSql(cleanName, uniqueCols, parsed.rows, types);
-  recordDatabaseActivity(getActiveDatabase(), "IMPORT", code);
-
-  return {
-    tableName: cleanName,
-    tableCount: 1,
-    rowCount: inserted,
-    log,
-    errors,
-    code,
-  };
 }
 
 /** Importa um script SQL com suporte a CREATE DATABASE/USE, no banco ativo. */
@@ -1017,16 +1025,30 @@ export async function importSql(sql: string): Promise<ImportReport> {
   const log: string[] = [];
   const errors: string[] = [];
   const suggestions: SqlSuggestion[] = [];
-  const res = await parseAndExecuteScript(sql, { stopOnError: false });
-  for (const s of res.statements) {
-    if (s.success) {
-      log.push(`#${s.index} ${s.keyword}: ${s.message}`);
-    } else {
-      errors.push(`#${s.index} ${s.keyword}: ${s.message}`);
-      suggestions.push(await suggestSqlFix(s.index, s.keyword, s.sql, s.message));
-    }
-  }
+
   const engine = await ensureActiveEngine();
+
+  // Desliga foreign keys para evitar erros de ordem de inserção
+  engine.run("PRAGMA foreign_keys = OFF;");
+
+  try {
+    const res = await parseAndExecuteScript(sql, { stopOnError: false });
+    for (const s of res.statements) {
+      if (s.success) {
+        log.push(`#${s.index} ${s.keyword}: ${s.message}`);
+      } else {
+        errors.push(`#${s.index} ${s.keyword}: ${s.message}`);
+        suggestions.push(await suggestSqlFix(s.index, s.keyword, s.sql, s.message));
+      }
+    }
+  } finally {
+    // Reativa foreign keys ao final
+    engine.run("PRAGMA foreign_keys = ON;");
+  }
+
+  // Detecta dependências entre comandos falhados
+  const suggestionsWithDeps = detectDependencies(suggestions);
+
   const tables = await listTables(engine);
   return {
     tableName: tables.map((t) => t.name).join(", "),
@@ -1035,8 +1057,147 @@ export async function importSql(sql: string): Promise<ImportReport> {
     log,
     errors,
     code: sql,
-    suggestions,
+    suggestions: suggestionsWithDeps,
   };
+}
+
+/**
+ * Detecta dependências entre comandos falhados: se um comando falha com
+ * "no such table X" e um comando anterior falhou ao criar X, marca como dependente.
+ */
+function detectDependencies(suggestions: SqlSuggestion[]): SqlSuggestion[] {
+  // Mapa de índice -> nome da tabela criada (quando o comando é CREATE TABLE)
+  const createdTables = new Map<number, string>();
+
+  // Primeira passagem: identifica tabelas que comandos falhados tentaram criar
+  for (const s of suggestions) {
+    if (s.keyword === "CREATE" && /CREATE\s+TABLE/i.test(s.original)) {
+      const match = s.original.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`[]?(\w+)["`\]]?/i);
+      if (match) {
+        createdTables.set(s.index, match[1]);
+      }
+    }
+  }
+
+  // Segunda passagem: marca comandos como dependentes
+  const result: SqlSuggestion[] = [];
+  for (const s of suggestions) {
+    // Verifica se o erro é "no such table"
+    const noSuchTableMatch = s.message.match(/no such table\s*[:\s]*([^\s)]+)/i);
+    if (noSuchTableMatch) {
+      const missingTable = noSuchTableMatch[1].replace(/["`']/g, "");
+      // Busca um comando anterior que tenta criar essa tabela
+      for (const [creatorIndex, tableName] of createdTables) {
+        if (creatorIndex < s.index && tableName.toLowerCase() === missingTable.toLowerCase()) {
+          // Encontrou dependência
+          const originalTrunc = truncateSql(s.original);
+          result.push({
+            ...s,
+            action: "dependente",
+            originalTruncated: originalTrunc.preview,
+            originalMeta: formatTruncatedMeta(originalTrunc),
+            dependsOn: creatorIndex,
+          });
+          continue;
+        }
+      }
+    }
+    // Se não marcou como dependente, mantém original
+    result.push(s);
+  }
+
+  return result;
+}
+
+/**
+ * Divide um INSERT multi-row em vários INSERTs menores para evitar
+ * sobrecarregar o sql.js. Respeita strings literais e parênteses aninhados.
+ */
+export function chunkLargeInsert(sql: string, maxRows = 500): string[] {
+  // Verifica se é um INSERT com VALUES múltiplos
+  const insertMatch = sql.match(/^INSERT\s+INTO\s+([^\s(]+)\s*\(([^)]+)\)\s+VALUES\s+/i);
+  if (!insertMatch) return [sql];
+
+  const tableName = insertMatch[1];
+  const columns = insertMatch[2];
+  const valuesPart = sql.slice(insertMatch[0].length);
+
+  // Divide os valores em linhas, respeitando strings e parênteses
+  const rows: string[] = [];
+  let current = "";
+  let depth = 0;
+  let inString = false;
+  let stringChar = "";
+
+  for (let i = 0; i < valuesPart.length; i++) {
+    const ch = valuesPart[i];
+    const next = valuesPart[i + 1];
+
+    if (inString) {
+      current += ch;
+      if (ch === stringChar) {
+        if (next === stringChar) {
+          current += next;
+          i++;
+        } else {
+          inString = false;
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      inString = true;
+      stringChar = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      depth++;
+      current += ch;
+      continue;
+    }
+
+    if (ch === ")") {
+      depth--;
+      current += ch;
+      if (depth === 0) {
+        rows.push(current.trim());
+        current = "";
+        // Pula vírgula e espaço após o fechamento
+        if (next === ",") {
+          i++;
+          // Pula espaços
+          while (i + 1 < valuesPart.length && /\s/.test(valuesPart[i + 1])) {
+            i++;
+          }
+        }
+        continue;
+      }
+      continue;
+    }
+
+    current += ch;
+  }
+
+  // Se houver algo pendente, adiciona
+  if (current.trim()) {
+    rows.push(current.trim());
+  }
+
+  // Se não há múltiplas linhas, retorna original
+  if (rows.length <= maxRows) return [sql];
+
+  // Divide em chunks
+  const chunks: string[] = [];
+  for (let i = 0; i < rows.length; i += maxRows) {
+    const chunkRows = rows.slice(i, i + maxRows);
+    const chunkSql = `INSERT INTO ${tableName} (${columns}) VALUES ${chunkRows.join(", ")};`;
+    chunks.push(chunkSql);
+  }
+
+  return chunks;
 }
 
 /**
@@ -1062,7 +1223,11 @@ export async function importSqlWithCorrections(
     selecionados: selected.size,
   });
 
+  const engine = await ensureActiveEngine();
+  engine.run("PRAGMA foreign_keys = OFF;");
+
   try {
+    // Primeira passagem: aplica correções (remove/fix)
     for (const suggestion of suggestions) {
       const label = `#${suggestion.index} ${suggestion.keyword}`;
       if (!selected.has(suggestion.index)) {
@@ -1081,9 +1246,13 @@ export async function importSqlWithCorrections(
       if (suggestion.action === "fix" && suggestion.fixed) {
         console.log(`[importSqlWithCorrections] Aplicando correção da linha ${suggestion.index} (${suggestion.ruleId})…`);
         try {
-          const result = await runQuery(suggestion.fixed);
-          console.log(`[importSqlWithCorrections] ${label}: correção aplicada com sucesso → "${result.message}".`);
-          log.push(`${label}: corregido — ${result.message}`);
+          // Chunks large INSERTs
+          const statementsToRun = chunkLargeInsert(suggestion.fixed);
+          for (const stmt of statementsToRun) {
+            await runQuery(stmt);
+          }
+          console.log(`[importSqlWithCorrections] ${label}: correção aplicada com sucesso.`);
+          log.push(`${label}: corregido`);
           recordLearningFixed(suggestion.ruleId);
           const kw = suggestion.keyword;
           if (kw === "CREATE" || kw === "INSERT" || kw === "REPLACE") {
@@ -1108,14 +1277,60 @@ export async function importSqlWithCorrections(
         continue;
       }
 
-      // action === "manual"
-      console.log(`[importSqlWithCorrections] ${label}: manual — mantido como pendente.`);
+      // action === "dependente" ou "manual"
+      console.log(`[importSqlWithCorrections] ${label}: ${suggestion.action} — mantido como pendente.`);
       errors.push(`${label}: ${suggestion.message}`);
       pending.push(suggestion);
     }
 
+    // Segunda passagem: re-executa comandos dependentes na ordem original
+    // após as correções dos pais terem sido aplicadas
+    const dependentSuggestions = suggestions.filter(
+      (s) => s.action === "dependente" && selected.has(s.index)
+    );
+
+    if (dependentSuggestions.length > 0) {
+      console.log("[importSqlWithCorrections] Re-executando comandos dependentes…");
+      // Ordena pelo índice original para manter a ordem
+      dependentSuggestions.sort((a, b) => a.index - b.index);
+
+      for (const suggestion of dependentSuggestions) {
+        const label = `#${suggestion.index} ${suggestion.keyword}`;
+        console.log(`[importSqlWithCorrections] Re-executando ${label}…`);
+        try {
+          // Chunks large INSERTs
+          const statementsToRun = chunkLargeInsert(suggestion.original);
+          for (const stmt of statementsToRun) {
+            await runQuery(stmt);
+          }
+          console.log(`[importSqlWithCorrections] ${label}: re-execução bem-sucedida.`);
+          log.push(`${label}: re-executado com sucesso`);
+          // Remove da lista de pendentes
+          const pendingIdx = pending.findIndex((p) => p.index === suggestion.index);
+          if (pendingIdx >= 0) pending.splice(pendingIdx, 1);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(
+            `[importSqlWithCorrections] ${label}: re-execução falhou`,
+            e,
+            e instanceof Error ? e.message : undefined,
+            e instanceof Error ? e.stack : undefined
+          );
+          errors.push(`${label}: ${msg}`);
+          // Atualiza para manual se ainda falhar
+          const pendingIdx = pending.findIndex((p) => p.index === suggestion.index);
+          if (pendingIdx >= 0) {
+            pending[pendingIdx] = {
+              ...suggestion,
+              action: "manual",
+              reason: "Ainda falha após a correção da dependência; revise manualmente.",
+            };
+          }
+        }
+      }
+    }
+
     console.log("[importSqlWithCorrections] Atualizando catálogo de tabelas pós-correção…");
-    const engine = await ensureActiveEngine();
     const tables = await listTables(engine);
     const rep: ImportReport = {
       tableName: tables.map((t) => t.name).join(", "),
@@ -1141,6 +1356,8 @@ export async function importSqlWithCorrections(
       error?.stack
     );
     throw error;
+  } finally {
+    engine.run("PRAGMA foreign_keys = ON;");
   }
 }
 

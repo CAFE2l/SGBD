@@ -180,6 +180,15 @@ export default function ImportarPage() {
     [report, sqlText, importSqlWithCorrections, showToast]
   );
 
+  const applyAutoFix = useCallback(async () => {
+    if (!report || busyRef.current) return;
+    // Seleciona todos os comandos não-manuais (incluindo dependentes)
+    const autoFixIndexes = report.suggestions
+      ?.filter((s) => s.action !== "manual")
+      .map((s) => s.index) ?? [];
+    await applySqlFixes(autoFixIndexes);
+  }, [report, applySqlFixes]);
+
   const handleCsvFile = useCallback(
     async (file: File) => {
       setPhase("parsing");
@@ -370,6 +379,7 @@ export default function ImportarPage() {
               suggestions={report.suggestions ?? []}
               busy={busy}
               onApply={applySqlFixes}
+              onAutoFix={applyAutoFix}
             />
           )}
           <ImportResultTabs report={report} />
@@ -530,21 +540,34 @@ function DoneState({
   report: ImportReport;
   onImportAnother: () => void;
 }) {
+  const hasErrors = report.errors.length > 0;
+
   return (
-    <div className="mt-8 space-y-4 rounded-2xl border border-sky-400/20 bg-sky-400/5 p-5">
+    <div className={`mt-8 space-y-4 rounded-2xl border p-5 ${
+      hasErrors
+        ? "border-amber-400/30 bg-amber-400/5"
+        : "border-sky-400/20 bg-sky-400/5"
+    }`}>
       <div className="flex items-center gap-3">
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-400/15 text-emerald-300">
-          ✓
+        <span className={`flex h-8 w-8 items-center justify-center rounded-full ${
+          hasErrors
+            ? "bg-amber-400/15 text-amber-300"
+            : "bg-emerald-400/15 text-emerald-300"
+        }`}>
+          {hasErrors ? "!" : "✓"}
         </span>
         <div>
-          <h3 className="text-sm font-semibold text-white">Importação concluída</h3>
+          <h3 className="text-sm font-semibold text-white">
+            {hasErrors ? "Importação concluída com erros" : "Importação concluída"}
+          </h3>
           <p className="text-xs text-slate-400">
             {report.tableCount} tabela(s) no banco atual.
+            {hasErrors && ` ${report.errors.length} comando(s) falharam.`}
           </p>
         </div>
       </div>
 
-      <div className="rounded-lg border border-white/10 bg-black/20 p-3 font-mono text-xs text-slate-300">
+      <div className="max-h-60 overflow-auto rounded-lg border border-white/10 bg-black/20 p-3 font-mono text-xs text-slate-300">
         {report.log.map((l, i) => (
           <div key={i}>{l}</div>
         ))}
@@ -696,7 +719,9 @@ function ImportResultTabs({ report }: { report: ImportReport }) {
               </div>
             ) : (
               <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center text-sm text-slate-500">
-                Não foi possível carregar os dados.
+                {tables.length === 0
+                  ? "Nenhuma tabela ainda. Importe um arquivo para começar."
+                  : "Não foi possível carregar os dados."}
               </div>
             )}
           </div>
