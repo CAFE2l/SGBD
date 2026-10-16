@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getForeignKeys,
   getTableData,
@@ -9,6 +9,7 @@ import {
 } from "@/lib/sqlite/db";
 import { ErDiagram } from "./ErDiagram";
 import { ResultTable } from "./ResultTable";
+import { useDb } from "@/hooks/useDb";
 import type { QueryResult, TableSchema } from "@/lib/sqlite/types";
 
 export type TableTab = "estrutura" | "dados" | "diagrama";
@@ -30,12 +31,30 @@ export function TableDetails({
   table,
   defaultTab = "estrutura",
 }: TableDetailsProps) {
+  const { version, subscribe } = useDb();
   const [activeTab, setActiveTab] = useState<TableTab>(defaultTab);
   const [schema, setSchema] = useState<TableSchema | null>(null);
   const [fks, setFks] = useState<ForeignKeyInfo[]>([]);
   const [rowData, setRowData] = useState<QueryResult | null>(null);
   const [loadingSchema, setLoadingSchema] = useState(false);
   const [loadingRows, setLoadingRows] = useState(false);
+
+  // Subscribe to database changes for live sync across tabs
+  const versionRef = useRef(version);
+  useEffect(() => {
+    versionRef.current = version;
+  }, [version]);
+
+  useEffect(() => {
+    const unsub = subscribe(() => {
+      // When notified of a change, re-fetch all data for the current table
+      if (table) {
+        void loadSchema(table);
+      }
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadSchema is stable (depends only on defaultTab)
+  }, [table, subscribe]);
 
   const loadSchema = useCallback(
     async (name: string) => {

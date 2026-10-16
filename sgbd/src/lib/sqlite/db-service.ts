@@ -9,7 +9,7 @@
  * accuracy after any DDL/DML operation.
  */
 
-import type { Database } from "sql.js";
+import type { Database, SqlValue } from "sql.js";
 import {
   ensureActiveEngine,
   saveActive,
@@ -95,6 +95,22 @@ function bumpSchema(): void {
 function bumpData(): void {
   dataVersion++;
   notify();
+}
+
+/**
+ * Manually trigger a change notification (for external mutations)
+ * Use this when changes happen outside the service layer
+ */
+export function notifyChange(): void {
+  notify();
+}
+
+/**
+ * Get current version pair for comparison
+ * Returns [schemaVersion, dataVersion]
+ */
+export function getVersion(): [number, number] {
+  return [schemaVersion, dataVersion];
 }
 
 /**
@@ -264,7 +280,7 @@ function booleanColumnsOf(engine: Database, table: string): Set<string> {
  */
 function resultToObject(
   columns: string[],
-  values: (string | number | bigint | boolean | null)[],
+  values: SqlValue[][],
   message: string
 ): QueryResult {
   const rows: Record<string, unknown>[] = values.map((row) => {

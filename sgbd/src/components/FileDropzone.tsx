@@ -5,19 +5,28 @@ import { useCallback, useRef, useState, type DragEvent } from "react";
 interface FileDropzoneProps {
   accept: string;
   onFile: (file: File) => void;
+  onFiles?: (files: File[]) => void;  // For multiple file support
   label?: string;
+  multiple?: boolean;  // Support multiple file selection
 }
 
-export function FileDropzone({ accept, onFile, label }: FileDropzoneProps) {
+export function FileDropzone({ accept, onFile, onFiles, label, multiple = false }: FileDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   const handleFiles = useCallback(
     (files: FileList | null) => {
-      const file = files?.[0];
-      if (file) onFile(file);
+      const fileArray = Array.from(files ?? []);
+      if (fileArray.length === 0) return;
+      
+      if (onFiles && multiple) {
+        onFiles(fileArray);
+      } else {
+        const file = fileArray[0];
+        if (file) onFile(file);
+      }
     },
-    [onFile]
+    [onFile, onFiles, multiple]
   );
 
   const onDrop = useCallback(
@@ -74,6 +83,7 @@ export function FileDropzone({ accept, onFile, label }: FileDropzoneProps) {
         ref={inputRef}
         type="file"
         accept={accept}
+        multiple={multiple}
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
       />

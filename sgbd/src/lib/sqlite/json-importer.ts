@@ -9,6 +9,11 @@
  */
 
 import type { TableSchema, ForeignKeyInfo } from "./types";
+import {
+  createTableSql,
+  insertStatements,
+  quoteIdentifier,
+} from "./export-serializers";
 
 export type ColumnType = "INTEGER" | "REAL" | "TEXT" | "DATE" | "DATETIME" | "BOOLEAN";
 
@@ -37,11 +42,7 @@ export interface SchemaAwareTable {
     pk: boolean;
   }>;
   primaryKey?: string[];
-  foreignKeys?: Array<{
-    from: string;
-    to: string;
-    table: string;
-  }>;
+  foreignKeys?: ForeignKeyInfo[];
   rows: Record<string, unknown>[];
 }
 
@@ -51,7 +52,12 @@ export interface SchemaAwareTable {
 function isSchemaAwareFormat(data: unknown): data is { tables: Record<string, SchemaAwareTable> } {
   if (typeof data !== "object" || data === null) return false;
   const obj = data as Record<string, unknown>;
-  return typeof obj.tables === "object" && obj.tables !== null;
+  if (typeof obj.tables !== "object" || obj.tables === null) return false;
+  return Object.values(obj.tables as Record<string, unknown>).every((table) => {
+    if (typeof table !== "object" || table === null) return false;
+    const definition = table as Record<string, unknown>;
+    return Array.isArray(definition.columns) && Array.isArray(definition.rows);
+  });
 }
 
 /**
@@ -241,6 +247,23 @@ export function parseJson(content: string, defaultTableName: string = "tabela_js
       });
       
       result[tableName] = { columns, rows, types };
+      const primaryKey = tableData.primaryKey ?? tableData.columns
+        .filter((column) => column.pk)
+        .map((column) => column.name);
+      result[tableName].schema = {
+        name: tableName,
+        sql: null,
+        columns: tableData.columns.map((column, index) => ({
+          cid: index,
+          name: column.name,
+          type: column.type || "TEXT",
+          notnull: column.nullable ? 0 : 1,
+          dflt_value: column.default ?? null,
+          pk: Math.max(primaryKey.indexOf(column.name) + 1, 0),
+        })),
+        primaryKey,
+        foreignKeys: tableData.foreignKeys ?? [],
+      };
     }
     
     return { tables: result };
@@ -249,6 +272,24 @@ export function parseJson(content: string, defaultTableName: string = "tabela_js
   // Check if it's an object with table names as keys (multiple tables)
   if (typeof data === "object" && data !== null && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
+    const wrappedTables = obj.tables;
+    if (typeof wrappedTables === "object" && wrappedTables !== null && !Array.isArray(wrappedTables)) {
+      const tableObject = wrappedTables as Record<string, unknown>;
+      const allTableArrays = Object.values(tableObject).every((value) => Array.isArray(value));
+      if (allTableArrays) {
+        const result: Record<string, JsonTable> = {};
+        for (const [tableName, values] of Object.entries(tableObject)) {
+          const arr = values as Record<string, unknown>[];
+          const columns = getAllKeys(arr);
+          const rows = rowsToArray(arr, columns);
+          const types = columns.map((column) =>
+            inferType(rows.map((row) => row[columns.indexOf(column)]))
+          );
+          result[tableName] = { columns, rows, types };
+        }
+        return { tables: result };
+      }
+    }
     const keys = Object.keys(obj);
     
     // Check if all values are arrays of objects
@@ -387,7 +428,7 @@ export function extractSchemaFromJson(content: string, tableName: string): Extra
   if (!table || !table.rows || table.rows.length === 0) {
     return null;
   }
-  
+
   const columns = table.columns.map((name, i) => ({
     name,
     type: table.types?.[i] || "TEXT",
@@ -402,4 +443,48 @@ export function extractSchemaFromJson(content: string, tableName: string): Extra
     primaryKey: undefined,
     foreignKeys: undefined,
   };
+}
+
+/**
+ * Rebuilds JSON exports as a SQLite script for the browser import flow.
+ */
+export function jsonToSql(content: string, defaultTableName = "tabela_json"): string {
+  const parsed = parseJson(content, defaultTableName);
+  const entries = Object.entries(parsed.tables);
+  if (entries.length === 0) {
+    throw new Error("O arquivo JSON não contém tabelas reconhecidas.");
+  }
+  const statements = ["PRAGMA foreign_keys=OFF;"];
+
+  for (const [name, table] of entries) {
+    if (table.columns.length === 0) {
+      if (table.rows.length === 0 && !table.schema) continue;
+      throw new Error(`A tabela ${name} no JSON não possui colunas.`);
+    }
+    if (table.schema) {
+      statements.push(createTableSql({
+        name,
+        columns: table.schema.columns,
+        foreignKeys: table.schema.foreignKeys ?? [],
+      }));
+    } else {
+      const columns = table.columns.map((column, index) => {
+        const type = table.types?.[index] ?? "TEXT";
+        return `${quoteIdentifier(column)} ${type}`;
+      });
+      statements.push(`CREATE TABLE ${quoteIdentifier(name)} (${columns.join(", ")});`);
+    }
+    const rows = table.rows.map((values) =>
+      Object.fromEntries(table.columns.map((column, index) => [column, values[index] ?? null]))
+    );
+    for (const statement of insertStatements(name, table.columns, rows)) {
+      statements.push(statement);
+    }
+  }
+
+  if (statements.length === 1) {
+    throw new Error("O JSON só contém tabelas vazias sem esquema para restaurar.");
+  }
+  statements.push("PRAGMA foreign_keys=ON;");
+  return statements.join("\n");
 }

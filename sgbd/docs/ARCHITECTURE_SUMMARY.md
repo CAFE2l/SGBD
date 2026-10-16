@@ -1,238 +1,326 @@
-# SGBD Project Architecture Summary
+# Architecture Summary: SGBD Project
 
-## BEFORE Changes
+## Overview
 
-### Current Architecture
+SGBD is a Next.js application (Next.js 15.3.9) that provides a full-featured SQLite database management interface in the browser using sql.js. All data is stored in IndexedDB and persists across sessions.
+
+## Project Structure
+
+```
+src/
+├── app/                    # Next.js pages
+│   ├── importar/page.tsx   # Import SQL/CSV/JSON files
+│   ├── exportar/page.tsx   # Export tables/databases
+│   ├── console/page.tsx    # SQL console with table sidebar
+│   ├── tabelas/page.tsx    # Table browser (phpMyAdmin-style)
+│   └── bancos/page.tsx     # Database manager
+├── components/              # Reusable UI components
+│   ├── FileDropzone.tsx    # File upload area
+│   ├── TableDetails.tsx    # Estrutura/Dados/Diagrama tabs
+│   ├── TableList.tsx       # Sidebar table list
+│   ├── ErDiagram.tsx       # ER diagram editor
+│   └── ResultTable.tsx     # Data table renderer
+├── hooks/                  # React hooks
+│   ├── useDb.tsx           # Database context & operations
+│   ├── useActiveTable.tsx  # Active table selection
+│   ├── useTableCounts.ts   # Row count hooks
+│   └── useToast.ts         # Toast notification hook
+└── lib/sqlite/             # Data access layer
+    ├── db.ts               # Core database operations (sql.js wrapper)
+    ├── db-service.ts       # Service layer (exists but not fully integrated)
+    ├── types.ts            # TypeScript interfaces
+    ├── csv-parser.ts       # CSV parsing utilities
+    ├── json-importer.ts    # JSON import utilities
+    ├── json-exporter.ts    # JSON export utilities
+    └── export-*.ts         # Export serialization
+```
+
+## Current State: Schema & Data State Locations
+
+### 1. Schema State (Column Definitions, Types, PK/FK)
+- **Source**: `PRAGMA table_info()` and `PRAGMA foreign_key_list()` in `db.ts`
+- **Access Pattern**: Read on-demand (lazy loading)
+- **Functions**:
+  - `getTableSchema(table)` → `TableSchema` (name, sql, columns[])
+  - `getForeignKeys(table)` → `ForeignKeyInfo[]`
+  - `ColumnInfo`: { cid, name, type, notnull, dflt_value, pk }
+
+### 2. Table List State
+- **Location**: `useDb.tsx` context → `tables: TableInfo[]`
+- **Update Pattern**: Refetched after DDL operations (CREATE, DROP, ALTER)
+- **Refresh**: `listTables()` called in `refresh()` after mutations
+
+### 3. Data State (Row Values)
+- **Source**: Database engine via SELECT queries
+- **Access Pattern**: Read on-demand (lazy loading per tab)
+- **Functions**:
+  - `getTableData(table, limit)` → `{ columns: string[], rows: Row[] }`
+  - `getEditableTableData(table, limit)` → includes rowid
+
+### 4. Database Context (`useDb.tsx`)
+- `tables`: TableInfo[] - list of tables in active database
+- `activeDatabase`: string | null - currently selected database name
+- `databases`: string[] - list of saved databases
+- Provides: `refresh()`, `switchDatabase()`, `importSqlScript()`, `importCsvData()`, etc.
+
+## Three Tabs Data Flow (TableDetails.tsx)
+
+### Estrutura Tab
+```
+Mount/Change → loadSchema() → getTableSchema() + getForeignKeys()
+              → setSchema(), setFks()
+              → Render column table with type/PK/FK/nullable info
+```
+
+### Dados Tab
+```
+Tab Switch → loadRows() → getTableData(table, DATA_LIMIT)
+           → setRowData()
+           → Render ResultTable with columns/rows
+```
+Note: Uses `rowData && schema?.name === name` check to avoid refetch if already loaded
+
+### Diagrama Tab
+```
+Render → ErDiagram component
+       → getTables() for all tables
+       → getTableSchema() for each
+       → getForeignKeys() for each
+       → ReactFlow diagram with draggable nodes
+```
+
+## Current Issues with Tab Synchronization
+
+### Problem 1: No Real-time Updates
+When a mutation occurs (e.g., adding a column in Diagrama):
+1. The mutation happens via `ALTER TABLE` SQL
+2. `save()` is called (autosave to IndexedDB)
+3. But tabs are NOT notified to refresh
+
+### Problem 2: Independent Data Fetching
+Each tab manages its own loading state:
+- `loadSchema()` in Estrutura
+- `loadRows()` in Dados  
+- Separate useEffects for each
+
+### Problem 3: No Cross-tab Communication
+Changes in one tab don't trigger re-renders in others because:
+- Each tab has isolated `useState` for its data
+- No shared subscription mechanism
+
+## db-service.ts: Intended Design (Not Yet Integrated)
+
+The `db-service.ts` file implements a publish-subscribe pattern:
+
+```typescript
+// Version counters for change detection
+let schemaVersion = 0;  // incremented on DDL
+let dataVersion = 0;    // incremented on DML
+
+// Subscription API
+export function subscribe(listener: Listener): () => void
+export function getSchemaVersion(): number
+export function getDataVersion(): number
+
+// Mutation operations
+export async function createTable(...)  // bumps schema + data
+export async function addColumn(...)    // bumps schema
+export async function renameColumn(...) // bumps schema
+export async function dropColumn(...)   // bumps schema
+```
+
+**Issue**: This service layer exists but is NOT wired into the React hooks or components. The React components still use `db.ts` directly.
+
+## Existing Integrations
+
+### Import Flow (importar/page.tsx)
+```
+File Drop → handleFile() → ext detection (sql/csv/json)
+         → handleSqlFile() / handleCsvFile() / handleJsonFile()
+         → importSqlScript() / importCsvData() / jsonToSql() + importSqlScript()
+         → refresh() via useDb hook
+```
+
+**CSV Improvements Needed**: Uses Papa.parse instead of custom csv-parser.ts; missing type inference preview
+
+### Export Flow (exportar/page.tsx)
+```
+Button Click → exportOne() / exportAll()
+           → exportTable() / exportDatabase()
+           → Formats: sql, csv, json-data, json-schema
+           → download(blob)
+```
+
+## Key Types
+
+```typescript
+// From types.ts
+export interface TableInfo {
+  name: string;
+  sql: string | null;
+}
+
+export interface ColumnInfo {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;     // 0 or 1
+  dflt_value: string | null;
+  pk: number;          // 0 or 1+
+}
+
+export interface TableSchema {
+  name: string;
+  sql: string | null;
+  columns: ColumnInfo[];
+}
+
+export interface ForeignKeyInfo {
+  table: string;
+  from: string;
+  to: string;
+}
+
+export interface ImportReport {
+  tableName: string;
+  tableCount: number;
+  rowCount: number;
+  log: string[];
+  errors: string[];
+  suggestions?: SqlSuggestion[];
+}
+```
+
+## Recommendations for Feature Implementation
+
+### Feature 1: Import/Convert Between Formats
+
+1. **CSV Import** (`handleCsvFile`):
+   - Replace `Papa.parse` with `parseCsv()` from csv-parser.ts
+   - Add `inferColumnType()` with DATE/DATETIME/BOOLEAN support
+   - Add preview dialog with type override options
+   
+2. **JSON Import** (`handleJsonFile`):
+   - Already uses `jsonToSql()` which calls `parseJson()`
+   - `parseJson()` supports 4 formats: schema-aware, object with tables, array, NDJSON
+   - Need to add progress indicator for large files
+
+3. **Auto-detect**: Already implemented via file extension in `handleFile()`
+
+4. **Multiple Files**: Not currently supported - FileDropzone only processes first file
+
+### Feature 2: Live Sync for Three Tabs
+
+1. **Integrate db-service.ts subscription pattern**:
+   - Have `TableDetails` subscribe to schema/data version changes
+   - On notification, refetch all three views
+
+2. **Alternative: Use existing useEffect deps**:
+   - Add dependency on a shared "version" counter
+   - Increment counter in `useDb.refresh()` after mutations
+
+3. **Implementation approach**:
+   - Create `useDbVersion()` hook returning current version
+   - Have all tabs depend on this version
+   - When mutation occurs, bump version and re-render
+
+## Data Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         UI COMPONENTS                           │
-├─────────────────────────────────────────────────────────────────┤
-│  Importar/page.tsx    Console/page.tsx    Exportar/page.tsx     │
-│        │                     │                  │               │
-│        ▼                     ▼                  ▼               │
-│  TableDetails.tsx   TableDetails.tsx    ResultTable.tsx Editable │
-│        │                     │                  Grid            │
-│        ▼                     ▼                  │               │
-│  SchemaDiagram.tsx  TableList.tsx         useDb.exportTableCsv   │
+│                         Browser Storage                         │
+│  ┌─────────────┐     IndexedDB    ┌─────────────┐              │
+│  │ Databases   │ ◄─────────────── │ Schema/Files│              │
+│  │ (IndexedDB) │                  │ (IndexedDB) │              │
+│  └─────────────┘                  └─────────────┘              │
 └─────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                          HOOKS CONTEXT                            │
-├─────────────────────────────────────────────────────────────────┤
-│  DbProvider (useDb)   TableSelectionProvider                    │
-│  - tables: TableInfo[]  - activeTable: string | null             │
-│  - databases: string[]    - selectTable()                         │
-│  - activeDatabase         useTableCounts() fetching counts       │
-│  - refresh()              per-component                          │
+│                       SQL.js Engine                             │
+│  ┌─────────────┐                                                    │
+│  │ In-Memory   │                                                    │
+│  │ SQLite DB   │                                                    │
+│  └─────────────┘                                                    │
+│        │                                                          │
+│        ▼                                                          │
+│  PRAGMA table_info()  ──────► TableSchema                         │
+│  PRAGMA foreign_key_list()                                         │
 └─────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    DATABASE MANAGER (lib/)                       │
-├─────────────────────────────────────────────────────────────────┤
-│  database-manager.ts        sqlite/db.ts         persist.ts       │
-│  - initManager()            - getTableSchema()              │
-│  - executeSql()             - getTableData()                  │
-│  - importSql()              - getForeignKeys()                │
-│  - executeScript()          - importCsv()                       │
-│  - listTables()             - addForeignKey()                   │
-│  - switchActiveDatabase()   - addPrimaryKey()                   │
-│  - createDatabase()         - exportSql() / exportTableCsv()    │
-│  - ...                    - updateTableCell()                   │
-│                             - resultToObject()                  │
+│                     db.ts (Public API)                          │
+│  - getTableSchema()                                               │
+│  - getForeignKeys()                                               │
+│  - getTableData()                                                 │
+│  - importSql()                                                    │
+│  - importCsv()                                                    │
+│  - createTable(), addColumn(), dropColumn(), renameColumn()     │
 └─────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      STORAGE (IndexedDB)                          │
-├─────────────────────────────────────────────────────────────────┤
-│  Database bytes (Uint8Array)                                   │
-│  Registry: { databases: string[], activeDatabase: string }     │
-│  History: timestamps, queries, success/fail                     │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Key Issues in Current Architecture
-
-1. **No Single Source of Truth for Schema/Data**
-   - `TableDetails.tsx` fetches schema and data independently
-   - `ErDiagram.tsx` has its own `refresh()` that fetches schema
-   - `TableList.tsx` just displays what `useDb` provides (no row counts until loaded)
-   - Each mutation in Diagram (add FK, set PK) updates DB but doesn't notify other tabs
-
-2. **Import/Export Limitations**
-   - Only supports `.sql` and `.csv`
-   - CSV parsing is basic (PapaParse default settings)
-   - No preview step for CSV types
-   - No JSON support at all
-   - Export is single-table CSV only, no batches
-   - No schema-aware JSON export
-
-3. **State Sync Issues**
-   - `useDb.tables` is a snapshot at refresh time, not reactive to real-time changes
-   - When import happens, `refresh()` is called but tabs may not update immediately
-   - No version tracking to detect stale data
-
-4. **Bugs**
-   - Estrutura: Nullable column shows "Sim" when it should show "Não" for PK
-   - Row counts: 0 shown for imported tables ( rowCount property in ImportReport is wrong)
-   - Diagram: hint bar overlaps nodes
-   - Dados: table clipped, single column sort indicator
-
----
-
-## AFTER Changes (Planned Architecture)
-
-### New Service Layer
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         SERVICE LAYER                             │
-├─────────────────────────────────────────────────────────────────┤
-│  db-service.ts                                                   │
-│  - SINGLE source of truth for:                                   │
-│    * schemaVersion: number (increments on DDL)                    │
-│    * dataVersion: number (increments on DML/import)                 │
-│    * listeners: Set<() => void>                                   │
-│                                                                  │
-│  MUTATIONS (transactional, rollback on error):                   │
-│  - createTable(name, columns, options)                           │
-│  - dropTable(name)                                                 │
-│  - renameTable(old, new)                                           │
-│  - addColumn(table, columnDef)                                   │
-│  - dropColumn(table, column)                                       │
-│  - renameColumn(table, old, new)                                   │
-│  - changeColumnType(table, column, type, rebuild)                │
-│  - setNullable(table, column, nullable)                          │
-│  - setDefault(table, column, default)                            │
-│  - setPrimaryKey(table, column)                                    │
-│  - dropPrimaryKey(table, column)                                   │
-│  - addForeignKey(...) / dropForeignKey(...)                        │
-│  - insertRow(table, values)                                        │
-│  - updateRow(table, rowid, values)                                 │
-│  - deleteRow(table, rowid)                                         │
-│                                                                  │
-│  QUERIES (read from PRAGMA/sqlite_master for accuracy):          │
-│  - getTables() => TableInfo[]                                      │
-│  - getTableSchema(name) => TableSchema                             │
-│  - getTableData(name, limit) => QueryResult                        │
-│  - getForeignKeys(name) => ForeignKeyInfo[]                        │
-│  - getTableCount(name) => number                                   │
-│                                                                  │
-│  SUBSCRIPTION:                                                     │
-│  - subscribe(listener) => unsubscribe function                   │
-│  - notify() => calls all listeners (emitters)                     │
-└─────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      DB SERVICE PROVIDER                          │
-├─────────────────────────────────────────────────────────────────┤
-│  DbServiceProvider                                               │
-│  - Uses db-service internally                                    │
-│  - Provides: tables, activeDatabase, counts, errors              │
-│  - Actions: mutate(), refresh(), switchDatabase(), etc.          │
-│  - Emits React context updates                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Import/Export Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        IMPORT FLOW                              │
-├─────────────────────────────────────────────────────────────────┤
-│  FileDropzone accepts: .sql, .csv, .json                         │
-│                                                                  │
-│  ┌──────────┐   ┌──────────────┐   ┌──────────────┐              │
-│  │ .sql     │──▶│ MySQL-to-    │──▶│ Fix flow     │              │
-│  │ dump     │   │ SQLite conv │   │ (Correções)  │              │
-│  └──────────┘   └──────────────┘   └──────────────┘              │
-│                                                                  │
-│  ┌──────────┐   ┌──────────────┐   ┌──────────────┐              │
-│  │ .csv     │──▶│ Parse CSV    │──▶│ Preview/     │              │
-│  │          │   │ with types   │   │ Override     │              │
-│  └──────────┘   └──────────────┘   └──────────────┘              │
-│                                                                  │
-│  ┌──────────┐   ┌──────────────┐   ┌──────────────┐              │
-│  │ .json    │──▶│ Parse JSON   │──▶│ Schema       │              │
-│  │          │   │ (multi_fmt)  │   │ restore      │              │
-│  └──────────┘   └──────────────┘   └──────────────┘              │
-│                                                                  │
-│  All flows: batch INSERT (500-1000 rows), progress bar, cancel   │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                        EXPORT FLOW                              │
-├─────────────────────────────────────────────────────────────────┤
-│  Per-table exports:                                              │
-│  - SQL (SQLite/MariaDB) with types, PK, FK, defaults            │
-│  - CSV (zip if multiple) with proper escaping                   │
-│  - JSON: "data only" or "schema-aware" format                    │
-│                                                                  │
-│  Full database: SQL dump, JSON schema-aware archive              │
-│                                                                  │
-│  Schema-aware JSON format:                                       │
-│  {                                                          │
-│    tables: {                                                    │
-│      tableName: {                                               │
-│        columns: [{name, type, nullable, default, pk}],         │
-│        primaryKey: [{name}],                                    │
-│        foreignKeys: [{from, to, onDelete, onUpdate}],           │
-│        rows: [...]                                               │
-│      }                                                          │
-│    },
-│    indexes: [...]
-│  }
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Tab Synchronization
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    TAB SYNCHRONIZATION                            │
-├─────────────────────────────────────────────────────────────────┤
+│                    React Components                             │
 │                                                                   │
-│  Estrutura ◄────────────── Dados ◄────────────── Diagrama       │
-│      │                      │                       │             │
-│      ▼                      ▼                       ▼             │
-│  TableDetails.tsx    TableDetails.tsx      ErDiagram.tsx       │
+│  TableDetails (Estrutura/Dados/Diagrama)                         │
+│    │                                                             │
+│    ├── Estrutura Tab ──► useEffect → getTableSchema()           │
+│    │                     (lazy, on table select)                │
+│    │                                                             │
+│    ├── Dados Tab ─────► useEffect → getTableData()             │
+│    │                     (lazy, on tab switch)                  │
+│    │                                                             │
+│    └── Diagrama Tab ───► ErDiagram component                      │
+│                        → getTables() + getTableSchema()           │
+│                        → ReactFlow with draggable nodes         │
 │                                                                   │
-│         │                     │                     │           │
-│         └──────────┬──────────┘─────────────┬─────┘           │
-│                    │                        │                  │
-│                    ▼                        ▼                  │
-│         ┌─────────────────────────────────────────────────┐     │
-│         │           DbServiceProvider (React Context)    │     │
-│         │  - subscribes to db-service events               │     │
-│         │  - updates state on any mutation/import/export   │     │
-│         └─────────────────────────────────────────────────┘     │
-│                              │                                  │
-│                              ▼                                  │
-│         ┌─────────────────────────────────────────────────┐     │
-│         │              db-service.ts                      │     │
-│         │  - All mutations go through here               │     │
-│         │  - Increments schemaVersion/dataVersion       │     │
-│         │  - Calls notify() → all subscribers update   │     │
-│         └─────────────────────────────────────────────────┘     │
-│                              │                                  │
-│                              ▼                                  │
-│         ┌─────────────────────────────────────────────────┐     │
-│         │           SQLite Database (sql.js)             │     │
-│         └─────────────────────────────────────────────────┘     │
+│  Console Page ───► TableList (sidebar) + SqlEditor + ResultTable │
 │                                                                   │
+│  Import Page ───► FileDropzone → CSV Parser / JSON Importer      │
+│                                                                   │
+│  Export Page ───► Export Service → SQL/CSV/JSON/ZIP generation  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Bug Fixes
+## State Management Flow
 
-1. **Bug 1 (PK/Nullable)**: Fixed in TableDetails.tsx - changed logic from `c.notnull === 1 ? "Não" : "Sim"` to correct boolean logic.
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   User Action   │     │   Mutation API  │     │   Persistence   │
+│ (click, drag,   │────►│ (db.ts exports) │────►│   (IndexedDB)   │
+│  upload, etc)  │     │                 │     │                 │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+         │                        │                        │
+         │              ┌─────────┴─────────┐            │
+         │              │    save() call    │            │
+         │              └─────────┬─────────┘            │
+         │                        │                       │
+         │              ┌─────────▼─────────┐            │
+         │              │   DatabaseManager  │◄───────────┘
+         │              │   (indexeddb.ts)   │  (autosave)
+         │              └─────────┬─────────┘
+         │                        │
+         │              ┌─────────▼─────────┐
+         │              │  useDb.refresh()    │
+         │              │  (via context)     │
+         │              └─────────┬─────────┘
+         │                        │
+         │              ┌─────────▼─────────┐
+         │              │  Components re-     │
+         │              │  render with new  │
+         │              │  props/state      │
+         │              └────────────────────┘
+```
 
-2. **Bug 2 (Row counts)**: Fixed in ImportReport - rowCount should be actual row count from data, not table count.
+## Mutation Handling (For Live Sync)
 
-3. **Bug 3 (Diagram hint bar)**: CSS adjustment - hint bar positioned outside canvas area or made dismissible.
+Currently:
+1. Mutations are executed via `ALTER TABLE` SQL in db.ts functions
+2. `save()` is called to persist to IndexedDB
+3. No explicit notification to React components
 
-4. **Bug 4 (Dados clipping)**: Added horizontal scroll to ResultTable component with sticky header.
+Needed for Feature 2:
+1. Add version counter in db-service.ts
+2. Have components subscribe to version changes
+3. On version change, all tabs re-fetch their data

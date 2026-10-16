@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Papa from "papaparse";
 import Link from "next/link";
 import { PageShell } from "@/components/PageShell";
 import { FileDropzone } from "@/components/FileDropzone";
@@ -12,8 +11,10 @@ import { FixSuggestionsCard } from "@/components/FixSuggestionsCard";
 import { useDb } from "@/hooks/useDb";
 import { getTableData, getActiveDatabase } from "@/lib/sqlite/db";
 import type { ImportReport, QueryResult } from "@/lib/sqlite/types";
+import { jsonToSql } from "@/lib/sqlite/json-importer";
+import { parseCsvWithTypes, type ColumnType as CsvColumnType } from "@/lib/sqlite/csv-parser";
 
-type ColumnType = "INTEGER" | "REAL" | "TEXT";
+type ColumnType = CsvColumnType;
 
 type FixToast = { type: "ok" | "err"; text: string } | null;
 
@@ -42,6 +43,28 @@ export default function ImportarPage() {
   const [csv, setCsv] = useState<CsvState | null>(null);
   const [csvTableName, setCsvTableName] = useState("");
 
+  const handleJsonFile = useCallback(async (file: File) => {
+    setPhase("parsing");
+    setBusy(true);
+    setSqlName(file.name);
+    try {
+      if (targetDb) await switchDatabase(targetDb);
+      const sql = jsonToSql(
+        await file.text(),
+        file.name.replace(/\.json$/i, "")
+      );
+      setSqlText(sql);
+      const rep = await importSqlScript(sql);
+      setReport(rep);
+      setPhase("done");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase("idle");
+    } finally {
+      setBusy(false);
+    }
+  }, [targetDb, switchDatabase, importSqlScript]);
+
   const handleFile = useCallback(
     (file: File) => {
       setError(null);
@@ -51,9 +74,11 @@ export default function ImportarPage() {
         handleSqlFile(file);
       } else if (ext === "csv") {
         handleCsvFile(file);
+      } else if (ext === "json") {
+        handleJsonFile(file);
       } else {
         setError(
-          "Formato não suportado. Envie um arquivo .sql ou .csv."
+          "Formato não suportado. Envie um arquivo .sql, .csv ou .json."
         );
       }
     },
@@ -197,33 +222,19 @@ export default function ImportarPage() {
       setCsvTableName(name);
       try {
         const text = await file.text();
-        const res = Papa.parse<string[]>(text, {
-          skipEmptyLines: true,
-        });
-        if (res.errors.length) {
-          throw new Error(
-            `Erro ao ler CSV: ${res.errors[0].message}`
-          );
+        const parsed = parseCsvWithTypes(text);
+        
+        // Check for empty file or no columns
+        if (parsed.columns.length === 0) {
+          throw new Error("CSV sem colunas detectadas.");
         }
-        const data = res.data.filter((r) => r.length > 0);
-        if (data.length < 2) {
-          throw new Error("CSV sem header ou sem linhas de dados.");
-        }
-        const columns = data[0];
-        const rows: (string | null)[][] = data.slice(1).map((r) => {
-          return columns.map((_, i) => (r[i] ?? "").trim() || null);
-        });
-        // garantir que nenhuma linha tenha mais colunas que o header
-        const types = columns.map((_, ci) => {
-          const values = rows.map((r) => r[ci]);
-          return inferType(values);
-        });
+        
         setCsv({
           fileName: file.name,
-          columns,
-          rows,
-          preview: rows.slice(0, 10),
-          types,
+          columns: parsed.columns,
+          rows: parsed.rows,
+          preview: parsed.rows.slice(0, 10),
+          types: parsed.types,
         });
         setPhase("preview");
       } catch (e) {
@@ -267,8 +278,9 @@ export default function ImportarPage() {
       <PageShell>
       <h1 className="text-2xl font-bold text-white">Importar dados</h1>
       <p className="mt-1 text-sm text-slate-400">
-        Envie um arquivo <code className="text-sky-300">.sql</code> (dump) ou{" "}
-        <code className="text-sky-300">.csv</code> para criar tabelas.
+        Envie um arquivo <code className="text-sky-300">.sql</code> (dump),{" "}
+        <code className="text-sky-300">.csv</code> ou{" "}
+        <code className="text-sky-300">.json</code> para criar tabelas.
       </p>
 
       {error && (
@@ -345,7 +357,7 @@ export default function ImportarPage() {
 
       {phase === "idle" && (
         <div className="mt-8">
-          <FileDropzone accept=".sql,.csv" onFile={handleFile} />
+          <FileDropzone accept=".sql,.csv,.json" onFile={handleFile} />
         </div>
       )}
 
@@ -594,26 +606,6 @@ function DoneState({
       </div>
     </div>
   );
-}
-
-function inferType(values: (string | null)[]): ColumnType {
-  let anyValue = false;
-  let allNumbers = true;
-  let allInt = true;
-  for (const v of values) {
-    if (v == null || v === "") continue;
-    anyValue = true;
-    const num = Number(v);
-    if (Number.isNaN(num)) {
-      allNumbers = false;
-    } else if (num % 1 !== 0) {
-      allInt = false;
-    }
-  }
-  if (!anyValue) return "TEXT";
-  if (allNumbers && allInt) return "INTEGER";
-  if (allNumbers) return "REAL";
-  return "TEXT";
 }
 
 type ResultTab = "tabela" | "codigo" | "diagrama";

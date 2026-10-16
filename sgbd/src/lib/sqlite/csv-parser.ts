@@ -83,7 +83,9 @@ export function parseCsv(content: string): CsvParseResult {
     return { columns: [], rows: [], delimiter };
   }
   
-  const columns = parseCsvLine(lines[0], delimiter);
+  // Parse header - convert nulls to empty strings
+  const rawColumns = parseCsvLine(lines[0], delimiter);
+  const columns: string[] = rawColumns.map(c => c ?? "");
   const rows: (string | null)[][] = [];
   
   for (let i = 1; i < lines.length; i++) {

@@ -25,6 +25,7 @@ import {
   reloadManagerForScope,
 } from "@/lib/sqlite/db";
 import { setCurrentUid, migrateAnonToUser } from "@/lib/profile/user-scope";
+import { notifyChange, subscribe } from "@/lib/sqlite/db-service";
 import { useAuth } from "./useAuth";
 import type {
   ImportReport,
@@ -57,6 +58,8 @@ interface DbContextValue {
     explicitTypes?: string[]
   ) => Promise<ImportReport>;
   reset: () => Promise<void>;
+  version: number;
+  subscribe: (callback: () => void) => () => void;
 }
 
 const DbContext = createContext<DbContextValue | null>(null);
@@ -70,7 +73,18 @@ export function DbProvider({ children }: { children: ReactNode }) {
   const [activeDatabase, setActiveDatabase] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
   const mounted = useRef(true);
+  const subscriptions = useRef<Set<() => void>>(new Set());
+
+  // Subscribe to external changes (via db-service)
+  useEffect(() => {
+    const callback = () => {
+      setVersion((v) => v + 1);
+    };
+    const unsub = subscribe(callback);
+    return unsub;
+  }, []);
 
   const syncState = useCallback(() => {
     setDatabases(listDatabases());
@@ -84,6 +98,10 @@ export function DbProvider({ children }: { children: ReactNode }) {
         setTables(t);
         syncState();
         setError(null);
+        // Bump version AFTER successful refresh to notify subscribers
+        setVersion((v) => v + 1);
+        // Also notify via db-service for external listeners
+        notifyChange();
       }
     } catch (e) {
       if (mounted.current) {
@@ -241,6 +259,11 @@ export function DbProvider({ children }: { children: ReactNode }) {
       importSqlWithCorrections: applySqlCorrections,
       importCsvData,
       reset,
+      version,
+      subscribe: (callback: () => void) => {
+        subscriptions.current.add(callback);
+        return () => subscriptions.current.delete(callback);
+      },
     }),
     [
       ready,
@@ -257,6 +280,7 @@ export function DbProvider({ children }: { children: ReactNode }) {
       applySqlCorrections,
       importCsvData,
       reset,
+      version,
     ]
   );
 

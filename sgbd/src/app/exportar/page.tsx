@@ -6,17 +6,19 @@ import { PageShell } from "@/components/PageShell";
 import { RequireAuth } from "@/components/RequireAuth";
 import { useDb } from "@/hooks/useDb";
 import {
-  exportSql,
-  exportTableCsv,
   countTable,
   getEditableTableData,
   updateTableCell,
 } from "@/lib/sqlite/db";
-import { buildJsonExport, type TableDef } from "@/lib/sqlite/json-exporter";
+import {
+  exportDatabase,
+  exportTable,
+  type ExportFormat,
+  type ExportProgress,
+} from "@/lib/sqlite/export-service";
 import type { QueryResult, Row } from "@/lib/sqlite/types";
 
-function download(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime });
+function download(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -24,7 +26,7 @@ function download(filename: string, content: string, mime: string) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 const PAGE_SIZE = 20;
@@ -33,146 +35,120 @@ export default function ExportarPage() {
   const { tables, databases, activeDatabase, switchDatabase } = useDb();
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [preview, setPreview] = useState<{
     title: string;
     content: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingTable, setEditingTable] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [delimiter, setDelimiter] = useState<"," | ";">(",");
+  const [dialect, setDialect] = useState<"sqlite" | "mysql">("sqlite");
+  const controller = useRef<AbortController | null>(null);
+  const countSequence = useRef(0);
 
   const refreshCounts = useCallback(async () => {
+    const sequence = ++countSequence.current;
     const next: Record<string, number> = {};
     for (const t of tables) {
       try {
         next[t.name] = await countTable(t.name);
       } catch {
-        next[t.name] = 0;
+        next[t.name] = -1;
       }
     }
-    setCounts(next);
+    if (sequence === countSequence.current) setCounts(next);
   }, [tables]);
 
   useEffect(() => {
     refreshCounts();
   }, [refreshCounts]);
 
-  const exportOneCsv = useCallback(
-    async (table: string) => {
-      setBusy(table);
-      setError(null);
-      try {
-        const content = await exportTableCsv(table);
-        download(`${table}.csv`, content, "text/csv");
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(null);
-      }
-    },
-    []
-  );
-
-  const exportAllSql = useCallback(async () => {
-    setBusy("all");
+  const startExport = useCallback((label: string) => {
+    const abortController = new AbortController();
+    controller.current = abortController;
+    setBusy(label);
     setError(null);
-    try {
-      const content = await exportSql();
-      download(`${activeDatabase ?? "banco"}.sql`, content, "application/sql");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }, [activeDatabase]);
-
-  const previewAllSql = useCallback(async () => {
-    setBusy("all");
-    setError(null);
-    try {
-      const content = await exportSql();
-      const lines = content.split("\n");
-      const head = lines.slice(0, 30).join("\n");
-      const tail =
-        lines.length > 30 ? `\n… (+${lines.length - 30} linhas)` : "";
-      setPreview({
-        title: `${activeDatabase ?? "banco"}.sql`,
-        content: head + tail,
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }, [activeDatabase]);
-
-  const exportOneSql = useCallback(
-    async (table: string) => {
-      setBusy(table);
-      setError(null);
-      try {
-        // Build schema-aware JSON
-        const result = await buildJsonExport(table, { includeSchema: true }) as TableDef;
-        const content = JSON.stringify(result, null, 2);
-        download(`${table}.json`, content, "application/json");
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(null);
-      }
-    },
-    []
-  );
-
-  const exportOneJson = useCallback(async (table: string, asSchemaAware: boolean) => {
-    setBusy(table);
-    setError(null);
-    try {
-      const result = await buildJsonExport(table, { includeSchema: asSchemaAware });
-      const content = JSON.stringify(result, null, 2);
-      download(`${table}.json`, content, "application/json");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
+    setToast(null);
+    setProgress(null);
+    return abortController;
   }, []);
 
-  const exportAllJson = useCallback(async (asSchemaAware = false) => {
-    setBusy("all");
+  const finishExport = useCallback(() => {
+    controller.current = null;
+    setBusy(null);
+    setProgress(null);
+  }, []);
+
+  const reportSuccess = useCallback((filename: string, rowCount: number) => {
+    setToast(`Exportação concluída: ${filename} · ${rowCount} linha(s).`);
     setError(null);
+  }, []);
+
+  const filenamePart = (value: string) =>
+    value.replace(/[\\/:*?"<>|]/g, "_").trim() || "banco";
+
+  const exportOne = useCallback(async (table: string, format: ExportFormat) => {
+    if (!activeDatabase) return;
+    const abortController = startExport(table);
+    const extension = format === "csv" ? "csv" : format === "sql" ? "sql" : "json";
     try {
-      const tablesData: Record<string, unknown> = {};
-      
-      for (const t of tables) {
-        const tableDef = await buildJsonExport(t.name, { includeSchema: asSchemaAware });
-        tablesData[t.name] = tableDef;
-      }
-      
-      const exportData = { tables: tablesData };
-      const content = JSON.stringify(exportData, null, 2);
-      download(`${activeDatabase ?? "banco"}.json`, content, "application/json");
+      const result = await exportTable(activeDatabase, table, format, {
+        delimiter,
+        dialect,
+        signal: abortController.signal,
+        onProgress: setProgress,
+      });
+      const filename = `${filenamePart(activeDatabase)}_${filenamePart(table)}.${extension}`;
+      download(filename, result.blob);
+      reportSuccess(filename, result.rowCount);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusy(null);
+      finishExport();
     }
-  }, [tables, activeDatabase]);
+  }, [activeDatabase, delimiter, dialect, finishExport, reportSuccess, startExport]);
+
+  const exportAll = useCallback(async (format: ExportFormat, previewOnly = false) => {
+    if (!activeDatabase) return;
+    const abortController = startExport("all");
+    try {
+      const result = await exportDatabase(activeDatabase, format, {
+        delimiter,
+        dialect,
+        signal: abortController.signal,
+        preview: previewOnly,
+        onProgress: setProgress,
+      });
+      if (previewOnly) {
+        setPreview({
+          title: `${activeDatabase}.sql`,
+          content: await result.blob.text(),
+        });
+      } else {
+        const extension = format === "csv" ? "zip" : format === "sql" ? "sql" : "json";
+        const filename = `${filenamePart(activeDatabase)}.${extension}`;
+        download(filename, result.blob);
+        reportSuccess(filename, result.rowCount);
+      }
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      finishExport();
+    }
+  }, [activeDatabase, delimiter, dialect, finishExport, reportSuccess, startExport]);
 
   const startEditing = useCallback((table: string) => {
     setEditingTable(table);
     setPreview(null);
   }, []);
 
-  const exportOneJsonDataOnly = useCallback(
-    async (table: string) => {
-      await exportOneJson(table, false);
-    },
-    [exportOneJson]
-  );
-
-  const exportAllJsonSchemaAware = useCallback(() => {
-    return exportAllJson(true);
-  }, [exportAllJson]);
+  const cancelExport = useCallback(() => controller.current?.abort(), []);
 
   if (tables.length === 0) {
     return (
@@ -200,7 +176,7 @@ export default function ExportarPage() {
   return (
     <RequireAuth>
       <PageShell>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Exportar</h1>
           <p className="mt-1 text-sm text-slate-400">
@@ -213,12 +189,13 @@ export default function ExportarPage() {
             <span className="text-slate-500">• SQL: SQLite (ou MySQL)</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="text-xs font-semibold text-slate-400">Banco:</label>
+        <div className="flex max-w-3xl flex-wrap items-center gap-3">
+          <label htmlFor="export-database" className="text-xs font-semibold text-slate-400">Banco:</label>
           <select
+            id="export-database"
             value={activeDatabase ?? ""}
             onChange={(e) => switchDatabase(e.target.value)}
-            className="rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 font-mono text-sm text-sky-300 outline-none focus:border-sky-400/60"
+            className="rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 font-mono text-sm text-sky-300 outline-none focus:border-sky-400/60 focus-visible:ring-2 focus-visible:ring-sky-400"
           >
             {databases.map((d) => (
               <option key={d} value={d}>
@@ -227,43 +204,111 @@ export default function ExportarPage() {
             ))}
           </select>
           <button
-            onClick={previewAllSql}
+            onClick={() => exportAll("sql", true)}
             disabled={busy !== null}
-            className="rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold text-slate-400 hover:bg-white/5 disabled:opacity-40"
+            className="rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold text-slate-400 outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-40"
           >
             Prévia SQL
           </button>
           <button
-            onClick={exportAllSql}
+            onClick={() => exportAll("sql")}
             disabled={busy !== null}
-            className="rounded-xl bg-sky-400 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
+            className="rounded-xl bg-sky-400 px-5 py-2 text-sm font-semibold text-slate-950 outline-none hover:bg-sky-300 focus-visible:ring-2 focus-visible:ring-sky-200 disabled:opacity-40"
           >
             {busy === "all" ? "Gerando…" : "Exportar banco como .sql"}
           </button>
           <div className="relative inline-block">
             <select
+              aria-label="Exportar o banco inteiro"
               onChange={(e) => {
                 const action = e.target.value;
-                if (action === "json-data") exportAllJson(false);
-                if (action === "json-schema") exportAllJsonSchemaAware();
+                if (action) void exportAll(action as ExportFormat);
+                e.target.value = "";
               }}
               disabled={busy !== null}
-              className="appearance-none rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-xs text-slate-400 outline-none"
+              className="appearance-none rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 pr-8 text-xs text-slate-400 outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-40"
             >
-              <option value="" disabled>Exportar JSON:</option>
+              <option value="">Exportar banco…</option>
+              <option value="csv">CSV (.zip)</option>
               <option value="json-data">Dados (.json)</option>
-              <option value="json-schema">Dados + esquema (.json)</option>
+              <option value="json-schema">Dados com esquema (.json)</option>
             </select>
             <svg className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </div>
+          <label className="flex items-center gap-1.5 text-xs text-slate-400">
+            Separador CSV
+            <select
+              aria-label="Separador CSV"
+              value={delimiter}
+              onChange={(e) => setDelimiter(e.target.value as "," | ";")}
+              className="rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-300 outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              <option value=",">Vírgula</option>
+              <option value=";">Ponto e vírgula (Excel pt-BR)</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-slate-400">
+            SQL
+            <select
+              aria-label="Dialeto SQL"
+              value={dialect}
+              onChange={(e) => setDialect(e.target.value as "sqlite" | "mysql")}
+              className="rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-300 outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              <option value="sqlite">SQLite</option>
+              <option value="mysql">MySQL</option>
+            </select>
+          </label>
         </div>
       </div>
 
       {error && (
-        <div className="mt-4 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
+        <div role="alert" className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+          <span>{error}</span>
+          <button
+            onClick={() => setError(null)}
+            aria-label="Fechar mensagem de erro"
+            className="rounded px-2 text-rose-200 outline-none hover:bg-rose-400/10 focus-visible:ring-2 focus-visible:ring-rose-300"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {toast && (
+        <div role="status" className="mt-4 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+          {toast}
+          <button
+            onClick={() => setToast(null)}
+            aria-label="Fechar confirmação"
+            className="ml-3 rounded px-2 outline-none hover:bg-emerald-400/10 focus-visible:ring-2 focus-visible:ring-emerald-300"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {busy && (
+        <div className="mt-4 flex items-center gap-3 rounded-xl border border-sky-400/20 bg-sky-400/5 px-4 py-3 text-xs text-sky-200" role="status">
+          <span aria-live="polite">
+            {progress
+              ? `Exportando ${progress.table}: ${progress.processed.toLocaleString("pt-BR")} / ${progress.total.toLocaleString("pt-BR")} linhas`
+              : "Preparando exportação…"}
+          </span>
+          {progress && progress.total > 0 && (
+            <progress
+              aria-label={`Progresso da exportação de ${progress.table}`}
+              value={progress.processed}
+              max={progress.total}
+              className="h-2 flex-1 accent-sky-400"
+            />
+          )}
+          <button
+            onClick={cancelExport}
+            className="rounded-lg border border-white/10 px-2.5 py-1 text-slate-300 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-sky-400"
+          >
+            Cancelar
+          </button>
         </div>
       )}
 
@@ -284,34 +329,38 @@ export default function ExportarPage() {
               >
                 <td className="px-4 py-3 font-mono text-sky-300">{t.name}</td>
                 <td className="px-4 py-3 text-slate-300">
-                  {counts[t.name] ?? "…"}
+                  {counts[t.name] === -1 ? "—" : (counts[t.name] ?? "…")}
+                  {counts[t.name] === 0 && (
+                    <span className="ml-2 text-xs text-slate-500">
+                      Tabela vazia: nada para exportar
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => startEditing(t.name)}
                       disabled={busy !== null}
-                      className="rounded-lg bg-amber-400/15 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-400/25 disabled:opacity-40"
+                      className="rounded-lg bg-amber-400/15 px-3 py-1.5 text-xs font-semibold text-amber-300 outline-none hover:bg-amber-400/25 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-40"
                     >
                       {editingTable === t.name ? "Editando…" : "Revisar"}
                     </button>
                     <div className="relative inline-block">
                       <select
+                        aria-label={`Exportar tabela ${t.name}`}
                         onChange={(e) => {
                           const action = e.target.value;
-                          if (action === "csv") exportOneCsv(t.name);
-                          if (action === "json-data") exportOneJsonDataOnly(t.name);
-                          if (action === "json-schema") exportOneSql(t.name);
-                          // Reset the select
-                          (e.target as HTMLSelectElement).value = "";
+                          if (action) void exportOne(t.name, action as ExportFormat);
+                          e.target.value = "";
                         }}
                         disabled={busy !== null}
-                        className="appearance-none rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-[11px] text-slate-400 outline-none"
+                        className="appearance-none rounded-lg border border-white/10 bg-slate-900 px-2 py-1 pr-6 text-[11px] text-slate-400 outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-40"
                       >
                         <option value="">Exportar…</option>
                         <option value="csv">CSV</option>
                         <option value="json-data">JSON (dados)</option>
                         <option value="json-schema">JSON (esquema)</option>
+                        <option value="sql">SQL</option>
                       </select>
                       <svg className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:export": "node tests/export.test.cjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

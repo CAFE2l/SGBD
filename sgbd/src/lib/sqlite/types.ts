@@ -18,6 +18,17 @@ export interface TableSchema {
   columns: ColumnInfo[];
 }
 
+export interface ForeignKeyInfo {
+  id?: number;
+  seq?: number;
+  table: string;
+  from: string;
+  to: string;
+  onUpdate?: string;
+  onDelete?: string;
+  match?: string;
+}
+
 export type Row = Record<string, unknown>;
 
 export interface QueryResult {
