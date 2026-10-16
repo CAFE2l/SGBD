@@ -4,9 +4,11 @@ import { ENGINES, type EngineId } from "@/lib/profile/engines";
 export function EngineBadge({ engine }: { engine: EngineId }) {
   const e = ENGINES[engine];
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${e.badgeClass}`} title={e.tagline}>
-      <span>{e.icon}</span>{e.label}
-      <span className={`h-1.5 w-1.5 rounded-full ${e.dotClass}`} />
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-300/30 bg-cyan-400/10 px-2.5 py-0.5 text-[11px] font-semibold text-cyan-200" title={`Motor real: SQLite. Dialeto selecionado: ${e.label} (simulado).`}>
+      <span aria-hidden>▦</span>
+      SQLite
+      <span className="text-cyan-100/55">· {e.short}</span>
+      <span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />
     </span>
   );
 }

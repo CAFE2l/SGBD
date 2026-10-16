@@ -111,12 +111,14 @@ export async function loadDatabaseBytes(
  * Apaga o binário de um banco nomeado do IndexedDB.
  */
 export async function deleteDatabaseBytes(name: string): Promise<void> {
-  try {
-    const db = await getDB();
-    await db.delete(STORE, nameToKey(name));
-  } catch {
-    // silencioso
-  }
+  const db = await getDB();
+  const tx = db.transaction(STORE, "readwrite");
+  await Promise.all([
+    tx.store.delete(nameToKey(name)),
+    tx.store.delete(`${NAME_PREFIX}${name}`),
+    tx.store.delete(`anon:${NAME_PREFIX}${name}`),
+  ]);
+  await tx.done;
 }
 
 /**

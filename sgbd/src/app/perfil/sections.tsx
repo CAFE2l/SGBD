@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { EngineBadge, consoleUrl, tablesUrl } from "@/components/EngineBadge";
+import { TiltCard } from "@/components/ui/TiltCard";
+import { StatTile } from "@/components/ui/StatTile";
 import type { EngineId } from "@/lib/profile/engines";
 import {
   fmtDate,
@@ -14,19 +16,8 @@ import {
 } from "./types";
 
 export function Stat(p: { label: string; value: number; title?: string }) {
-  return (
-    <div
-      className="rounded-xl border border-white/10 bg-black/20 px-4 py-2 text-center"
-      title={p.title}
-    >
-      <p className="text-xl font-bold text-white">{p.value}</p>
-      <p className="text-[10px] uppercase tracking-widest text-slate-500">
-        {p.label}
-      </p>
-    </div>
-  );
+  return <StatTile label={p.label} value={p.value} title={p.title} />;
 }
-
 export interface DbCardsProps {
   cards: DbCard[];
   loading: boolean;
@@ -51,7 +42,11 @@ export function DbCards(p: DbCardsProps) {
     return (
       <section>
         <HeadRow count={p.cards.length} onNew={p.onOpenPicker} />
-        <p className="text-sm text-slate-500">Carregando bancos…</p>
+        <div className="grid gap-3 md:grid-cols-2">
+          {[0, 1].map((item) => (
+            <div key={item} className="skeleton-shimmer h-36 rounded-2xl" />
+          ))}
+        </div>
       </section>
     );
   }
@@ -93,15 +88,16 @@ function HeadRow({ count, onNew }: { count: number; onNew: () => void }) {
 
 function EmptyBox() {
   return (
-    <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 p-8 text-center text-sm text-slate-500">
-      Nenhum banco ainda. Crie o primeiro escolhendo um motor.
+    <div className="glass-panel rounded-2xl p-8 text-center text-sm text-slate-400">
+    Nenhum banco criado ainda. Crie o primeiro escolhendo um motor.
     </div>
   );
 }
 
 function DbCardView({ c, p }: { c: DbCard; p: DbCardsProps }) {
   return (
-    <article className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+    <TiltCard className="h-full overflow-hidden">
+    <article className="h-full">
       <div className="p-4">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate font-mono text-sm font-bold text-white">
@@ -126,6 +122,7 @@ function DbCardView({ c, p }: { c: DbCard; p: DbCardsProps }) {
       )}
       {p.expandedDb === c.name && <TablesRow c={c} />}
     </article>
+    </TiltCard>
   );
 }
 
@@ -184,29 +181,12 @@ function ActionsRow({ c, p }: { c: DbCard; p: DbCardsProps }) {
       >
         Exportar
       </button>
-      {p.confirmDelete === c.name ? (
-        <span className="flex items-center gap-1">
-          <button
-            onClick={() => p.onDelete(c.name)}
-            className="rounded-lg bg-rose-500/20 px-3 py-1.5 text-xs font-semibold text-rose-300"
-          >
-            Confirmar?
-          </button>
-          <button
-            onClick={() => p.setConfirmDelete(null)}
-            className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-slate-400"
-          >
-            Não
-          </button>
-        </span>
-      ) : (
-        <button
-          onClick={() => p.setConfirmDelete(c.name)}
-          className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 hover:border-rose-400/40 hover:text-rose-300"
-        >
-          Excluir
-        </button>
-      )}
+      <button
+        onClick={() => p.setConfirmDelete(c.name)}
+        className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 hover:border-rose-400/40 hover:text-rose-300"
+      >
+        Excluir
+      </button>
       <button
         onClick={() => p.setExpandedDb(p.expandedDb === c.name ? null : c.name)}
         className="ml-auto rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-500 hover:text-white"
@@ -330,7 +310,7 @@ export function QueryHistory(p: QueryHistoryProps) {
             return (
               <div
                 key={e.id}
-                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2"
+                className="glass-panel rounded-xl px-3 py-2 transition-transform hover:-translate-y-0.5"
               >
                 <div className="flex items-center gap-2">
                   <button

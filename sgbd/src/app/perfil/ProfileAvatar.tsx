@@ -169,12 +169,12 @@ export function ProfileAvatar() {
   }
 
   return (
-    <div className="group relative h-16 w-16 shrink-0">
+    <div className="group relative h-24 w-24 shrink-0">
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
         disabled={uploading || removing}
-        className="relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-full bg-sky-400/15 ring-1 ring-white/10"
+        className="focus-ring relative flex h-24 w-24 items-center justify-center overflow-hidden rounded-full bg-sky-400/15 ring-1 ring-white/10"
         title={photoURL ? "Alterar foto" : "Adicionar foto"}
       >
         {photoURL ? (
@@ -185,7 +185,7 @@ export function ProfileAvatar() {
             className="h-full w-full object-cover"
           />
         ) : (
-          <span className="text-3xl font-bold text-sky-300">{initial}</span>
+          <span className="text-4xl font-bold text-sky-200">{initial}</span>
         )}
         {uploading ? (
           <span className="absolute inset-0 flex items-center justify-center bg-slate-950/60">

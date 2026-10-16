@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useDb } from "@/hooks/useDb";
 
 export function ResetButton() {
-  const { reset } = useDb();
+  const { reset, activeDatabase } = useDb();
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -19,6 +19,8 @@ export function ResetButton() {
     setConfirm(false);
     setBusy(false);
   };
+
+  if (!activeDatabase) return null;
 
   return (
     <button

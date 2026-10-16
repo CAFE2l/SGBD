@@ -13,13 +13,18 @@ import { DbCards, IoSection, QueryHistory, Stat, TablesByDb } from "./sections";
 import { ProfileAvatar } from "./ProfileAvatar";
 import { download, type DbCard } from "./types";
 import Papa from "papaparse";
+import { useToast } from "@/hooks/useToast";
+import { ToastContainer } from "@/components/Toast";
+import { GlassModal } from "@/components/ui/GlassModal";
+import { AnimatePresence } from "framer-motion";
 
 export default function PerfilPage() {
   return (<RequireAuth><PageShell><PerfilInner /></PageShell></RequireAuth>);
 }
 
 function PerfilInner() {
-  const { user } = useAuth();
+  const { user, updateProfile } = useAuth();
+  const { toasts, showToast, dismissToast } = useToast();
   const { databases, activeDatabase, createNewDatabase, refresh, ready } = useDb();
   const [cards, setCards] = useState<DbCard[]>([]);
   const [loadingCards, setLoadingCards] = useState(true);
@@ -34,6 +39,7 @@ function PerfilInner() {
   const [showFavOnly, setShowFavOnly] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [busyDb, setBusyDb] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -44,6 +50,10 @@ function PerfilInner() {
   const [jsonMsg, setJsonMsg] = useState<string | null>(null);
   const [sqlMsg, setSqlMsg] = useState<string | null>(null);
   const [csvMsg, setCsvMsg] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [savingName, setSavingName] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadAll = useCallback(async () => {
@@ -85,12 +95,13 @@ function PerfilInner() {
   const visibleLog = showFavOnly ? filteredLog.filter((e) => favKeys.has(`${e.database}::${norm(e.query)}`)) : filteredLog;
 
   const doCreate = async (name: string, engine: EngineId) => {
-    setCreating(true); setPageError(null);
+    setCreating(true); setCreateError(null);
     try {
       await createNewDatabase(name, engine);
       setShowPicker(false); setPageOk(`Banco "${name}" criado com motor ${ENGINES[engine].label}.`);
+      showToast(`Banco "${name}" criado.`, "success");
       await loadAll();
-    } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setCreateError(e instanceof Error ? e.message : String(e)); }
     finally { setCreating(false); }
   };
   const doRename = async (oldName: string) => {
@@ -99,6 +110,7 @@ function PerfilInner() {
     try {
       const clean = await renameDatabase(oldName, renameValue.trim());
       setRenaming(null); setPageOk(`Banco renomeado para "${clean}".`);
+      showToast(`Banco renomeado para "${clean}".`, "success");
       await refresh(); await loadAll();
     } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
     finally { setBusyDb(null); }
@@ -108,6 +120,7 @@ function PerfilInner() {
     try {
       const copy = await duplicateDatabase(name);
       setPageOk(`Banco duplicado como "${copy}".`);
+      showToast(`Banco duplicado como "${copy}".`, "success");
       await refresh(); await loadAll();
     } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
     finally { setBusyDb(null); }
@@ -128,6 +141,7 @@ function PerfilInner() {
     try {
       await dropDatabase(name);
       setConfirmDelete(null); setPageOk(`Banco "${name}" excluído.`);
+      showToast(`Banco "${name}" excluído permanentemente.`, "success");
       await refresh(); await loadAll();
     } catch (e) { setPageError(e instanceof Error ? e.message : String(e)); }
     finally { setBusyDb(null); }
@@ -135,6 +149,24 @@ function PerfilInner() {
   const doToggleFav = async (database: string, query: string, command: string) => {
     const { list } = await toggleFavorite({ database, query, command });
     setFavs(list);
+  };
+  const saveDisplayName = async () => {
+    const cleanName = nameValue.trim();
+    if (cleanName.length < 2 || cleanName.length > 40) {
+      setNameError("O nome deve ter entre 2 e 40 caracteres.");
+      return;
+    }
+    setSavingName(true);
+    setNameError(null);
+    try {
+      await updateProfile({ displayName: cleanName });
+      setEditingName(false);
+      showToast("Nome da conta atualizado.", "success");
+    } catch (cause) {
+      setNameError(cause instanceof Error ? cause.message : "Não foi possível salvar o nome.");
+    } finally {
+      setSavingName(false);
+    }
   };
   const doExportJson = async (dbName: string) => {
     setBusyDb(dbName); setPageError(null);
@@ -266,16 +298,85 @@ function PerfilInner() {
   const createdAt = user?.metadata?.creationTime ? new Date(user.metadata.creationTime).toLocaleDateString("pt-BR") : "—";
   return (
     <div className="space-y-8 pb-10">
-      <section className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-        <div className="h-1.5 bg-gradient-to-r from-amber-400 via-sky-400 to-emerald-400" />
-        <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
-          <ProfileAvatar />
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-2xl font-bold text-white">{displayName}</h1>
-            <p className="truncate text-sm text-slate-400">{user?.email ?? "—"}</p>
-            <p className="mt-1 text-xs text-slate-500">Conta criada em {createdAt}</p>
+      <section className="glass-panel relative overflow-hidden rounded-[24px]">
+        <div className="profile-gradient-bar h-1.5" />
+        <div className="relative flex flex-col gap-6 p-5 sm:flex-row sm:items-center sm:p-7">
+          <div className="relative shrink-0 rounded-full p-1 ring-1 ring-cyan-300/30 shadow-[0_0_35px_rgba(34,211,238,0.18)]">
+            <div className="rounded-full bg-gradient-to-br from-sky-300 via-cyan-300 to-emerald-300 p-[2px]">
+              <ProfileAvatar />
+            </div>
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="group min-w-0 flex-1">
+            {editingName ? (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveDisplayName();
+                }}
+                className="max-w-lg"
+              >
+                <label htmlFor="profile-display-name" className="sr-only">Nome da conta</label>
+                <input
+                  id="profile-display-name"
+                  autoFocus
+                  value={nameValue}
+                  onChange={(event) => {
+                    setNameValue(event.target.value);
+                    setNameError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setEditingName(false);
+                      setNameError(null);
+                    }
+                  }}
+                  maxLength={80}
+                  aria-invalid={!!nameError}
+                  aria-describedby={nameError ? "profile-name-error" : undefined}
+                  className="focus-ring w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-xl font-bold text-white"
+                />
+                {nameError && <p id="profile-name-error" role="alert" className="mt-2 text-xs text-rose-300">{nameError}</p>}
+                <div className="mt-3 flex gap-2">
+                  <button type="submit" disabled={savingName} className="rounded-lg bg-sky-400 px-3 py-1.5 text-xs font-semibold text-slate-950 disabled:opacity-50">
+                    {savingName ? "Salvando…" : "Salvar"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingName(false);
+                      setNameError(null);
+                    }}
+                    disabled={savingName}
+                    className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-2xl font-bold tracking-tight text-white sm:text-3xl">{displayName}</h1>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNameValue(displayName);
+                    setNameError(null);
+                    setEditingName(true);
+                  }}
+                  aria-label="Editar nome da conta"
+                  title="Editar nome"
+                  className="focus-ring rounded-lg p-2 text-slate-400 opacity-100 transition hover:bg-white/5 hover:text-cyan-200 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m16 4 4 4M4 20l4.2-.8L19 8.4a2.1 2.1 0 0 0-3-3L5.2 16.2 4 20Z" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            <p className="mt-1 truncate text-sm text-slate-300">{user?.email ?? "—"}</p>
+            <p className="mt-1.5 text-xs text-slate-500">Conta criada em {createdAt}</p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 sm:w-[min(100%,22rem)]">
             <Stat label="bancos" value={databases.length} />
             <Stat label="queries" value={stats.totalQueries} title="Queries executadas" />
             <Stat label="tabelas" value={totalTables} title="Tabelas/coleções" />
@@ -290,9 +391,35 @@ function PerfilInner() {
         setRenameValue={setRenameValue} setRenaming={setRenaming}
         confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete}
         expandedDb={expandedDb} setExpandedDb={setExpandedDb}
-        onOpenPicker={() => setShowPicker(true)}
+        onOpenPicker={() => {
+          setCreateError(null);
+          setShowPicker(true);
+        }}
         onRename={(n: string) => void doRename(n)} onDuplicate={(n: string) => void doDuplicate(n)}
         onExport={(n: string) => void doExport(n)} onDelete={(n: string) => void doDelete(n)} />
+      <AnimatePresence>
+        {confirmDelete && (
+          <GlassModal
+            title="Excluir banco de dados?"
+            description={`O banco “${confirmDelete}” e os dados associados serão removidos.`}
+            onClose={() => {
+              if (busyDb !== confirmDelete) setConfirmDelete(null);
+            }}
+          >
+            <div className="rounded-xl border border-rose-300/20 bg-rose-400/[0.07] p-4 text-sm leading-6 text-rose-100/90">
+              Esta ação é permanente. As tabelas, consultas, favoritos e registros de importação/exportação deste banco também serão apagados.
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmDelete(null)} disabled={busyDb === confirmDelete} className="focus-ring rounded-xl border border-white/10 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/5 disabled:opacity-50">
+                Cancelar
+              </button>
+              <button type="button" onClick={() => void doDelete(confirmDelete)} disabled={busyDb === confirmDelete} className="glass-button focus-ring rounded-xl bg-rose-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-50">
+                {busyDb === confirmDelete ? "Excluindo…" : "Excluir"}
+              </button>
+            </div>
+          </GlassModal>
+        )}
+      </AnimatePresence>
       <QueryHistory
         databases={databases} favs={favs}
         qText={qText} setQText={setQText} qDb={qDb} setQDb={setQDb}
@@ -311,7 +438,10 @@ function PerfilInner() {
         onExportSql={(n: string) => void doExportSql(n)}
         onExportCsv={(n: string) => void doExportCsv(n)}
         sqlMsg={sqlMsg} csvMsg={csvMsg} />
-      {showPicker && <EnginePicker existingNames={databases} busy={creating} onCancel={() => setShowPicker(false)} onConfirm={(n, e) => void doCreate(n, e)} />}
+      {showPicker && <EnginePicker existingNames={databases} busy={creating} serverError={createError} onNameChange={() => setCreateError(null)} onCancel={() => setShowPicker(false)} onConfirm={(n, e) => void doCreate(n, e)} />}
+      <div className="fixed bottom-4 right-4 z-[80] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2">
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      </div>
     </div>
   );
 }

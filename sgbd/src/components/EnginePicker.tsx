@@ -16,6 +16,8 @@ import { ENGINES, ENGINE_IDS, type EngineId } from "@/lib/profile/engines";
 export function EnginePicker({
   defaultName = "",
   existingNames = [],
+  serverError = null,
+  onNameChange,
   onCancel,
   onConfirm,
   busy = false,
@@ -23,6 +25,8 @@ export function EnginePicker({
   defaultName?: string;
   /** Nomes de bancos já existentes, para validar unicidade no passo 2. */
   existingNames?: string[];
+  serverError?: string | null;
+  onNameChange?: () => void;
   onCancel: () => void;
   onConfirm: (name: string, engine: EngineId) => void;
   busy?: boolean;
@@ -33,6 +37,7 @@ export function EnginePicker({
   const [name, setName] = useState(defaultName);
   const [submitted, setSubmitted] = useState(false);
   const dirRef = useRef<1 | -1>(1);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const goTo = useCallback((next: 1 | 2) => {
     dirRef.current = next === 2 ? 1 : -1;
@@ -53,13 +58,21 @@ export function EnginePicker({
     return () => window.removeEventListener("keydown", onKey);
   }, [onCancel, busy]);
 
+  useEffect(() => {
+    dialogRef.current
+      ?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+      ?.focus();
+  }, []);
+
   const trimmed = name.trim();
   const existing = useMemo(
-    () => new Set(existingNames.map((n) => n.trim())),
+    () => new Set(existingNames.map((n) => n.trim().toLocaleLowerCase("pt-BR"))),
     [existingNames]
   );
   const validChars = /^[A-Za-z0-9_]+$/.test(trimmed);
-  const duplicate = existing.has(trimmed);
+  const duplicate = existing.has(trimmed.toLocaleLowerCase("pt-BR"));
 
   let errorText: string | null = null;
   if (trimmed === "") {
@@ -68,6 +81,8 @@ export function EnginePicker({
     errorText = "Use apenas letras, números e sublinhado (_).";
   } else if (duplicate) {
     errorText = `O banco "${trimmed}" já existe. Escolha outro nome.`;
+  } else if (serverError) {
+    errorText = serverError;
   }
 
   const canSubmit = trimmed !== "" && validChars && !duplicate && !busy;
@@ -87,18 +102,41 @@ export function EnginePicker({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+    <motion.div
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-md"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: reduce ? 0.1 : 0.18 }}
       onClick={() => {
         if (!busy) onCancel();
       }}
     >
-      <div
-        className="w-full max-w-3xl overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl"
+      <motion.div
+        ref={dialogRef}
+        className="glass-panel w-full max-w-3xl overflow-hidden rounded-2xl shadow-2xl"
+        initial={reduce ? { opacity: 0 } : { opacity: 0, y: 14, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={reduce ? { duration: 0.1 } : { type: "spring", stiffness: 360, damping: 30 }}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label="Novo banco de dados"
+        onKeyDown={(event) => {
+          if (event.key !== "Tab") return;
+          const items = dialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          if (!items?.length) return;
+          const first = items[0];
+          const last = items[items.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
       >
         {/* Cabeçalho: título + stepper */}
         <div className="border-b border-white/10 px-6 py-4">
@@ -239,7 +277,10 @@ export function EnginePicker({
                 <input
                   autoFocus
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    onNameChange?.();
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") confirm();
                   }}
@@ -313,8 +354,8 @@ export function EnginePicker({
           sobre uma mesma camada relacional. Decisão documentada em{" "}
           <code className="font-mono text-slate-500">src/lib/profile/engines.ts</code>.
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

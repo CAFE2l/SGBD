@@ -30,7 +30,7 @@ interface CsvState {
 }
 
 export default function ImportarPage() {
-  const { tables, importSqlScript, importSqlWithCorrections, importCsvData, databases, activeDatabase, switchDatabase, createNewDatabase } = useDb();
+  const { tables, importSqlScript, importSqlWithCorrections, importCsvData, databases, activeDatabase, switchDatabase, createNewDatabase, ready } = useDb();
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<"idle" | "parsing" | "preview" | "done">(
     "idle"
@@ -272,6 +272,23 @@ export default function ImportarPage() {
   const setType = (idx: number, type: ColumnType) => {
     setCsv((c) => (c ? { ...c, types: c.types.map((t, i) => (i === idx ? type : t)) } : c));
   };
+
+  if (ready && databases.length === 0) {
+    return (
+      <RequireAuth>
+        <PageShell>
+          <div className="glass-panel mx-auto mt-12 max-w-xl rounded-[28px] p-9 text-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-300/10 text-3xl text-cyan-200" aria-hidden>⇧</div>
+            <h1 className="mt-5 text-2xl font-bold text-white">Crie um banco para começar</h1>
+            <p className="mt-2 text-sm text-slate-400">Escolha ou crie um banco antes de importar arquivos SQL, CSV ou JSON.</p>
+            <Link href="/bancos" className="glass-button focus-ring mt-6 inline-flex rounded-xl bg-sky-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-300">
+              + Criar novo banco
+            </Link>
+          </div>
+        </PageShell>
+      </RequireAuth>
+    );
+  }
 
   return (
     <RequireAuth>

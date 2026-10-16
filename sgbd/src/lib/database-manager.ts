@@ -14,7 +14,7 @@ import {
 } from "./sqlite/persist";
 import {
   appendHistory,
-  clearHistory,
+  clearDatabaseData,
   appendGlobalQueryLog,
 } from "./sqlite/history";
 import { engineOrDefault, type EngineId } from "./profile/engines";
@@ -23,8 +23,6 @@ import type {
   QueryResult,
   QueryScriptResult,
 } from "./sqlite/types";
-
-const DEFAULT_DB_NAME = "meu_banco";
 
 let SQL: SqlJsStatic | null = null;
 let initPromise: Promise<SqlJsStatic> | null = null;
@@ -74,8 +72,8 @@ async function getSql(): Promise<SqlJsStatic> {
 }
 
 /**
- * Inicializa o gerenciador: carrega o registro, migra um banco legado de
- * versões anteriores e garante que exista um banco ativo.
+ * Inicializa o gerenciador: carrega o registro e migra um banco legado, se
+ * houver. Um registro vazio é um estado válido e não cria bancos sozinho.
  *
  * A inicialização é deduplicada com um cache de Promise para que chamadas
  * concorrentes (ex: StrictMode mountando o provider duas vezes) não caiam em
@@ -86,7 +84,8 @@ let managerInitPromise: Promise<void> | null = null;
 
 async function initManagerImpl(): Promise<void> {
   if (registry.databases.length > 0) return;
-  const persisted = (await loadRegistry()) ?? {
+  const storedRegistry = await loadRegistry();
+  const persisted = storedRegistry ?? {
     databases: [],
     activeDatabase: null,
     meta: {},
@@ -94,17 +93,19 @@ async function initManagerImpl(): Promise<void> {
   registry = persisted;
   if (!registry.meta) registry.meta = {};
 
-  if (registry.databases.length === 0) {
-    const migrated = await migrateLegacyDatabase(DEFAULT_DB_NAME);
+  if (!storedRegistry && registry.databases.length === 0) {
+    const migrated = await migrateLegacyDatabase("meu_banco");
     if (migrated) {
       registry.databases = [migrated];
       registry.activeDatabase = migrated;
     }
   }
 
-  if (registry.databases.length === 0) {
-    // Cria o banco padrão diretamente (sem recursão via createDatabase).
-    await createDatabaseRaw(DEFAULT_DB_NAME);
+  if (
+    registry.activeDatabase &&
+    !registry.databases.includes(registry.activeDatabase)
+  ) {
+    registry.activeDatabase = null;
   }
   if (!registry.activeDatabase && registry.databases.length > 0) {
     registry.activeDatabase = registry.databases[0];
@@ -327,10 +328,20 @@ export async function switchActiveDatabase(name: string): Promise<void> {
 export async function ensureActiveEngine(): Promise<Database> {
   await initManager();
   if (!active) {
-    const target = registry.activeDatabase ?? DEFAULT_DB_NAME;
+    const target = registry.activeDatabase ?? registry.databases[0];
+    if (!target) {
+      throw new Error("Crie um banco para começar.");
+    }
     await switchActiveDatabase(target);
   }
-  return active!.db;
+  const current = active;
+  if (!current) {
+    throw new Error("Não foi possível carregar o banco ativo.");
+  }
+  if (!registry.databases.includes(current.name)) {
+    throw new Error("O banco ativo não existe mais. Selecione outro banco.");
+  }
+  return current.db;
 }
 
 /** Cria um novo banco nomeado e o torna o banco ativo. */
@@ -349,7 +360,7 @@ async function createDatabaseRaw(
 ): Promise<void> {
   const clean = sanitizeName(name);
   if (!clean) throw new Error("Nome de banco inválido.");
-  if (registry.databases.includes(clean)) {
+  if (registry.databases.some((name) => name.trim().toLowerCase() === clean.toLowerCase())) {
     throw new Error(`Banco "${clean}" já existe.`);
   }
   if (active) saveActive();
@@ -419,7 +430,7 @@ export async function dropDatabase(name: string): Promise<void> {
     active = null;
   }
   await deleteDatabaseBytes(name);
-  await clearHistory(name);
+  await clearDatabaseData(name);
   if (registry.meta) delete registry.meta[name];
   registry.databases = registry.databases.filter((d) => d !== name);
 
@@ -432,11 +443,31 @@ export async function dropDatabase(name: string): Promise<void> {
   if (active && registry.activeDatabase !== active.name) {
     active = null;
   }
-  if (registry.databases.length === 0) {
-    await createDatabase(DEFAULT_DB_NAME);
-  } else if (!active) {
-    await switchActiveDatabase(registry.activeDatabase!);
+  if (registry.databases.length > 0 && !active) {
+    await switchActiveDatabase(registry.activeDatabase ?? registry.databases[0]);
   }
+}
+
+/** Zera o conteúdo do banco ativo sem removê-lo do registro. */
+export async function resetActiveDatabase(): Promise<void> {
+  await initManager();
+  const name = registry.activeDatabase;
+  if (!name) return;
+  const sql = await getSql();
+  const replacement = new sql.Database();
+  replacement.run("PRAGMA foreign_keys = ON;");
+  if (active?.name === name) {
+    try {
+      active.db.close();
+    } catch {
+      // Banco já encerrado.
+    }
+  }
+  active = { name, db: replacement };
+  const now = Date.now();
+  if (registry.meta?.[name]) registry.meta[name].updatedAt = now;
+  await persistRegistry(registry);
+  await persistDatabaseBytes(name, replacement.export());
 }
 
 /**
@@ -502,7 +533,7 @@ export async function renameDatabase(
   if (!registry.databases.includes(oldName)) {
     throw new Error(`Banco "${oldName}" não encontrado.`);
   }
-  if (registry.databases.includes(clean)) {
+  if (registry.databases.some((name) => name.trim().toLowerCase() === clean.toLowerCase())) {
     throw new Error(`Banco "${clean}" já existe.`);
   }
   const bytes = await loadDatabaseBytes(oldName);
@@ -551,9 +582,13 @@ export async function duplicateDatabase(
   }
   let clean = sanitizeName(target ?? `${source}_copia`);
   if (!clean) throw new Error("Nome de banco inválido.");
-  if (registry.databases.includes(clean)) {
+  if (registry.databases.some((name) => name.trim().toLowerCase() === clean.toLowerCase())) {
     let i = 2;
-    while (registry.databases.includes(`${clean}_${i}`)) i++;
+    while (
+      registry.databases.some(
+        (name) => name.trim().toLowerCase() === `${clean}_${i}`.toLowerCase()
+      )
+    ) i++;
     clean = `${clean}_${i}`;
   }
   const bytes =
@@ -1051,13 +1086,15 @@ async function applyCreate(stmt: string, base: StatementOutcome): Promise<void> 
   if (m) {
     const ifNotExists = !!m[1];
     const name = sanitizeName(m[2]);
-    const existed = listDatabases().includes(name);
-    if (existed) {
+    const existingName = listDatabases().find(
+      (entry) => entry.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (existingName) {
       if (!ifNotExists) {
         throw new Error(`Banco "${name}" já existe.`);
       }
-      await switchActiveDatabase(name);
-      base.message = `Banco "${name}" já existia (mantido como ativo).`;
+      await switchActiveDatabase(existingName);
+      base.message = `Banco "${existingName}" já existia (mantido como ativo).`;
       base.success = true;
       return;
     }
@@ -1098,13 +1135,15 @@ async function applyDrop(stmt: string, base: StatementOutcome): Promise<void> {
     return;
   }
   const name = sanitizeName(m[2]);
-  const existed = listDatabases().includes(name);
-  if (!existed && !m[1]) {
+  const existingName = listDatabases().find(
+    (entry) => entry.trim().toLowerCase() === name.toLowerCase()
+  );
+  if (!existingName && !m[1]) {
     throw new Error(`Banco "${name}" não encontrado.`);
   }
-  await dropDatabase(name);
-  base.message = existed
-    ? `Banco "${name}" removido.`
+  if (existingName) await dropDatabase(existingName);
+  base.message = existingName
+    ? `Banco "${existingName}" removido.`
     : `Banco "${name}" não existia (nada a remover).`;
   base.success = true;
 }

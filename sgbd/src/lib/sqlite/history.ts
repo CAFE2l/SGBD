@@ -128,6 +128,41 @@ export async function clearHistory(dbName: string): Promise<void> {
   }
 }
 
+/** Remove histórico, favoritos e registros de importação/exportação do banco. */
+export async function clearDatabaseData(dbName: string): Promise<void> {
+  const db = await getIDB();
+  const tx = db.transaction("sqlite", "readwrite");
+  const store = tx.store;
+  const globalKey = skey(GLOBAL_LOG_KEY);
+  const favoritesKey = skey(FAVORITES_KEY);
+  const ioKey = skey(IO_HISTORY_KEY);
+  await store.delete(keyFor(dbName));
+  const [globalLog, favorites, ioHistory] = await Promise.all([
+    store.get(globalKey) as Promise<GlobalQueryEntry[] | undefined>,
+    store.get(favoritesKey) as Promise<FavoriteEntry[] | undefined>,
+    store.get(ioKey) as Promise<IoHistoryEntry[] | undefined>,
+  ]);
+  if (globalLog) {
+    await store.put(
+      globalLog.filter((entry) => entry.database !== dbName),
+      globalKey
+    );
+  }
+  if (favorites) {
+    await store.put(
+      favorites.filter((entry) => entry.database !== dbName),
+      favoritesKey
+    );
+  }
+  if (ioHistory) {
+    await store.put(
+      ioHistory.filter((entry) => entry.database !== dbName),
+      ioKey
+    );
+  }
+  await tx.done;
+}
+
 /* ── Log global de queries (todos os bancos) ─────────────────────────── */
 
 export async function getGlobalQueryLog(): Promise<GlobalQueryEntry[]> {

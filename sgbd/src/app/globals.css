@@ -3,14 +3,24 @@
 @tailwind utilities;
 
 :root {
-  --background: #020617;
+  --background: #080d19;
   --foreground: #e2e8f0;
+  --surface-glass: rgb(19 27 42 / 72%);
+  --surface-glass-strong: rgb(15 23 38 / 88%);
+  --border-glass: rgb(148 163 184 / 14%);
+  --accent-cyan: #38bdf8;
+  --accent-teal: #2dd4bf;
+  --radius-card: 20px;
+  --shadow-glass:
+    0 22px 60px rgb(1 5 15 / 35%),
+    0 1px 0 rgb(255 255 255 / 5%) inset,
+    0 0 32px rgb(34 211 238 / 5%);
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
 }
 
 @layer utilities {
@@ -19,5 +29,109 @@ body {
   }
   .glass {
     @apply bg-white/5 backdrop-blur-md border border-white/10;
+  }
+}
+
+.glass-panel {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface-glass), var(--surface-glass)) padding-box,
+    linear-gradient(135deg, rgb(255 255 255 / 14%), rgb(56 189 248 / 12%), rgb(45 212 191 / 9%)) border-box;
+  box-shadow: var(--shadow-glass);
+  backdrop-filter: blur(20px);
+}
+
+.glass-panel::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 25%), transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.glass-button {
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.glass-button::after {
+  position: absolute;
+  inset: -50% auto -50% -35%;
+  width: 28%;
+  transform: rotate(20deg) translateX(-160%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 28%), transparent);
+  content: "";
+  transition: transform 550ms ease;
+  pointer-events: none;
+}
+
+.glass-button:hover::after {
+  transform: rotate(20deg) translateX(520%);
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid rgb(56 189 248 / 90%);
+  outline-offset: 3px;
+}
+
+.ambient-aurora {
+  background:
+    radial-gradient(ellipse at 18% 12%, rgb(14 165 233 / 11%), transparent 40%),
+    radial-gradient(ellipse at 84% 26%, rgb(20 184 166 / 8%), transparent 36%),
+    radial-gradient(ellipse at 50% 100%, rgb(79 70 229 / 6%), transparent 45%);
+}
+
+.ambient-orb {
+  animation: ambient-drift 18s ease-in-out infinite alternate;
+}
+
+.profile-gradient-bar {
+  background: linear-gradient(100deg, #fbbf24, #38bdf8, #2dd4bf, #818cf8, #fbbf24);
+  background-size: 220% 100%;
+  animation: profile-gradient 12s linear infinite;
+}
+
+.status-pulse {
+  animation: status-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes ambient-drift {
+  from { translate: 0 0; }
+  to { translate: 2% 3%; }
+}
+
+@keyframes profile-gradient {
+  to { background-position: 220% 0; }
+}
+
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(52 211 153 / 38%); }
+  50% { box-shadow: 0 0 0 5px rgb(52 211 153 / 0%); }
+}
+
+@keyframes shimmer {
+  to { background-position: -200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, rgb(255 255 255 / 4%) 25%, rgb(255 255 255 / 9%) 50%, rgb(255 255 255 / 4%) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

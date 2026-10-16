@@ -150,26 +150,31 @@ export default function ExportarPage() {
 
   const cancelExport = useCallback(() => controller.current?.abort(), []);
 
-  if (tables.length === 0) {
+  if (databases.length === 0 || tables.length === 0) {
+    const noDatabases = databases.length === 0;
     return (
-      <PageShell>
-        <h1 className="text-2xl font-bold text-white">Exportar</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Corrija valores mal importados e depois exporte como CSV, JSON ou SQL.
-          Formatos: .sql (SQLite/MySQL), .csv, .json (dados ou com esquema).
-        </p>
-        <div className="mt-10 rounded-2xl border border-white/10 bg-white/5 p-10 text-center">
-          <p className="text-sm text-slate-400">
-            Nenhuma tabela carregada ainda.
-          </p>
-          <Link
-            href="/importar"
-            className="mt-4 inline-block rounded-xl bg-sky-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-300"
-          >
-            Importar dados
-          </Link>
-        </div>
-      </PageShell>
+      <RequireAuth>
+        <PageShell>
+          <h1 className="text-2xl font-bold text-white">Exportar</h1>
+          <div className="glass-panel mx-auto mt-10 max-w-xl rounded-[28px] p-9 text-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-300/10 text-3xl text-cyan-200" aria-hidden>⇩</div>
+            <h2 className="mt-5 text-xl font-bold text-white">
+              {noDatabases ? "Crie um banco para começar" : "Nenhuma tabela para exportar"}
+            </h2>
+            <p className="mt-2 text-sm text-slate-400">
+              {noDatabases
+                ? "Crie um banco de dados antes de importar ou exportar informações."
+                : "Importe dados ou crie tabelas no Console SQL para poder exportá-los."}
+            </p>
+            <Link
+              href={noDatabases ? "/bancos" : "/importar"}
+              className="glass-button focus-ring mt-6 inline-flex rounded-xl bg-sky-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-300"
+            >
+              {noDatabases ? "+ Criar novo banco" : "Importar dados"}
+            </Link>
+          </div>
+        </PageShell>
+      </RequireAuth>
     );
   }
 

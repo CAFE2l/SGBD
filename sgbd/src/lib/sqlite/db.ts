@@ -7,11 +7,13 @@ import {
   saveActive,
   executeSql,
   parseAndExecuteScript,
+  splitStatements as splitSqlStatements,
   initManager as managerInit,
   listTables as listTablesWithEngine,
   recordDatabaseActivity,
   getActiveDatabase,
   listDatabases,
+  resetActiveDatabase,
 } from "@/lib/database-manager";
 import type {
   TableInfo,
@@ -57,6 +59,7 @@ export {
   getDatabaseEngine,
   setDatabaseEngine,
   getProfileStats,
+  resetActiveDatabase,
   reloadManagerForScope,
   resetManagerCache,
 } from "@/lib/database-manager";
@@ -88,6 +91,7 @@ export async function runQuery(sql: string): Promise<QueryResult> {
 /** Lista as tabelas do banco ativo. */
 export async function listTables(engine?: Database): Promise<TableInfo[]> {
   if (engine) return listTablesWithEngine(engine);
+  if (!getActiveDatabase()) return [];
   return listTablesWithEngine(await ensureActiveEngine());
 }
 
@@ -1027,12 +1031,13 @@ export async function importSql(sql: string): Promise<ImportReport> {
   const suggestions: SqlSuggestion[] = [];
 
   const engine = await ensureActiveEngine();
+  const preparedSql = await prepareImportedIdColumns(sql, engine);
 
   // Desliga foreign keys para evitar erros de ordem de inserção
   engine.run("PRAGMA foreign_keys = OFF;");
 
   try {
-    const res = await parseAndExecuteScript(sql, { stopOnError: false });
+    const res = await parseAndExecuteScript(preparedSql, { stopOnError: false });
     for (const s of res.statements) {
       if (s.success) {
         log.push(`#${s.index} ${s.keyword}: ${s.message}`);
@@ -1041,6 +1046,7 @@ export async function importSql(sql: string): Promise<ImportReport> {
         suggestions.push(await suggestSqlFix(s.index, s.keyword, s.sql, s.message));
       }
     }
+
   } finally {
     // Reativa foreign keys ao final
     engine.run("PRAGMA foreign_keys = ON;");
@@ -1071,6 +1077,62 @@ export async function importSql(sql: string): Promise<ImportReport> {
     code: sql,
     suggestions: suggestionsWithDeps,
   };
+}
+
+/**
+ * Dumps educacionais podem incluir `_id` nos INSERTs, mas omiti-lo no schema
+ * (ou apontar para uma tabela antiga sem essa coluna). Harmoniza o schema
+ * somente quando o próprio arquivo importa explicitamente `_id`.
+ */
+async function prepareImportedIdColumns(
+  sql: string,
+  engine: Database
+): Promise<string> {
+  const statements = splitSqlStatements(sql);
+  const tablesNeedingId = new Set<string>();
+
+  for (const statement of statements) {
+    const insert = statement.match(
+      /^\s*INSERT(?:\s+OR\s+\w+)?\s+INTO\s+(".+?"|`.+?`|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*?)\)\s*VALUES\b/i
+    );
+    if (!insert) continue;
+    const columns = splitTopLevel(insert[2]).map((column) => unquoteIdent(column.trim()));
+    if (columns.some((column) => column.toLowerCase() === "_id")) {
+      tablesNeedingId.add(unquoteIdent(insert[1]));
+    }
+  }
+
+  if (tablesNeedingId.size === 0) return sql;
+
+  const tables = await listTables(engine);
+  for (const name of tablesNeedingId) {
+    const table = tables.find((item) => item.name.toLowerCase() === name.toLowerCase());
+    if (!table) continue;
+    const columns = engine.exec(`PRAGMA table_info(${quoteIdent(table.name)})`);
+    const hasId = columns[0]?.values.some(
+      (row) => String(row[1]).toLowerCase() === "_id"
+    );
+    if (!hasId) {
+      engine.run(`ALTER TABLE ${quoteIdent(table.name)} ADD COLUMN "_id" TEXT;`);
+      saveActive();
+    }
+  }
+
+  return statements
+    .map((statement) => {
+      const create = parseCreateTable(statement);
+      if (
+        !create ||
+        ![...tablesNeedingId].some(
+          (name) => name.toLowerCase() === create.name.toLowerCase()
+        ) ||
+        create.segments.some((segment) => firstIdent(segment)?.toLowerCase() === "_id")
+      ) {
+        return statement;
+      }
+      return statement.replace(/\)\s*$/, ', "_id" TEXT)');
+    })
+    .join(";\n");
 }
 
 /**
@@ -1434,13 +1496,5 @@ export async function exportTableCsv(table: string): Promise<string> {
  * mantendo o registro de bancos inalterado.
  */
 export async function resetDatabase(): Promise<void> {
-  const src = await import("@/lib/database-manager");
-  const name = src.getActiveDatabase() ?? "meu_banco";
-  await src.dropDatabase(name).catch(() => undefined);
-  // dropDatabase recria o banco padrão se for o único; para manter o nome
-  // original, recria explicitamente e o seleciona.
-  if (!src.listDatabases().includes(name)) {
-    await src.createDatabase(name);
-  }
-  await src.switchActiveDatabase(name).catch(() => undefined);
+  await resetActiveDatabase();
 }

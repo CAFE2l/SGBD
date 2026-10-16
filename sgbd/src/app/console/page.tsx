@@ -44,7 +44,7 @@ export default function ConsolePage() {
 }
 
 function ConsoleInner() {
-  const { tables, executeScript, databases, activeDatabase, switchDatabase, createNewDatabase } =
+  const { tables, executeScript, databases, activeDatabase, switchDatabase, createNewDatabase, ready } =
     useDb();
   const { activeTable, selectTable } = useActiveTable();
   const { counts: tableCounts, loading: loadingCounts } = useTableCounts(tables);
@@ -217,7 +217,48 @@ function ConsoleInner() {
         )}
       </div>
 
-      <div className="flex flex-col gap-6 lg:flex-row">
+      {!ready ? (
+        <div className="skeleton-shimmer mt-10 h-52 rounded-[28px]" aria-label="Carregando bancos" />
+      ) : !activeDatabase ? (
+        <div className="glass-panel mx-auto mt-10 max-w-xl rounded-[28px] p-8 text-center sm:p-10">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-300/10 text-3xl text-cyan-200" aria-hidden>
+            ▤
+          </div>
+          <h1 className="mt-5 text-2xl font-bold text-white">Crie um banco para começar</h1>
+          <p className="mt-2 text-sm text-slate-400">
+            O Console SQL precisa de um banco ativo para executar consultas e criar tabelas.
+          </p>
+          <button
+            type="button"
+            onClick={() => setShowNewDb(true)}
+            className="glass-button focus-ring mt-5 rounded-xl bg-sky-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-300"
+          >
+            + Criar novo banco
+          </button>
+          {showNewDb && (
+            <div className="mx-auto mt-4 flex max-w-sm flex-wrap justify-center gap-2">
+              <label className="sr-only" htmlFor="new-database-name">Nome do banco</label>
+              <input
+                id="new-database-name"
+                autoFocus
+                value={newDbName}
+                onChange={(event) => setNewDbName(event.target.value)}
+                placeholder="nome_do_banco"
+                onKeyDown={(event) => event.key === "Enter" && void createDb()}
+                className="focus-ring min-w-0 flex-1 rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-sm text-white"
+              />
+              <button
+                type="button"
+                onClick={() => void createDb()}
+                disabled={!newDbName.trim()}
+                className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40"
+              >
+                Criar
+              </button>
+            </div>
+          )}
+        </div>
+      ) : <div className="flex flex-col gap-6 lg:flex-row">
         {/* Sidebar de tabelas */}
         <aside className="w-full shrink-0 lg:w-64">
           <h2 className="mb-2 text-sm font-semibold text-slate-300">
@@ -371,7 +412,7 @@ function ConsoleInner() {
             </div>
           )}
         </div>
-      </div>
+      </div>}
     </PageShell>
     </RequireAuth>
   );
